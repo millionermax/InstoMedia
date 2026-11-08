@@ -12,6 +12,11 @@ from PIL import Image
 import uiautomator2 as u2
 
 from adb import InstagramReelUploader, DEFAULT_AUDIO_URL, DEFAULT_CAPTION
+import db
+import vault
+import package_scanner
+import excel_manager
+import login_flow
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
@@ -215,7 +220,7 @@ def serve_upload(filename):
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
 
-def run_workflow_async(audio_url, video_path, caption, hide_likes, hide_shares):
+def run_workflow_async(audio_url, video_path, caption, hide_likes, hide_shares, package_name=None):
     global current_uploader, workflow_status
     workflow_status["state"] = "running"
     workflow_status["current_step"] = 1
@@ -223,7 +228,10 @@ def run_workflow_async(audio_url, video_path, caption, hide_likes, hide_shares):
     workflow_status["error_message"] = None
 
     try:
-        current_uploader = InstagramReelUploader(log_callback=log_listener)
+        current_uploader = InstagramReelUploader(
+            package_name=package_name or "com.instagram.android",
+            log_callback=log_listener
+        )
         reel_url = current_uploader.execute_workflow(
             audio_url=audio_url,
             video_path=video_path,
@@ -252,6 +260,7 @@ def start_workflow():
     video_filename = data.get("video_filename")
     hide_likes = data.get("hide_likes", True)
     hide_shares = data.get("hide_shares", True)
+    package_name = data.get("package_name")
 
     video_path = None
     if video_filename:
@@ -261,7 +270,7 @@ def start_workflow():
 
     workflow_thread = threading.Thread(
         target=run_workflow_async,
-        args=(audio_url, video_path, caption, hide_likes, hide_shares),
+        args=(audio_url, video_path, caption, hide_likes, hide_shares, package_name),
         daemon=True
     )
     workflow_thread.start()
@@ -299,6 +308,311 @@ def stream_logs():
                 yield ": keepalive\n\n"
 
     return Response(event_stream(), mimetype="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Account Management Endpoints
+# ---------------------------------------------------------------------------
+batch_login_manager = login_flow.BatchLoginManager(log_callback=log_listener)
+
+
+@app.route("/api/accounts", methods=["GET"])
+def list_accounts():
+    status = request.args.get("status")
+    accounts = db.get_accounts(status=status)
+    return jsonify({"status": "ok", "accounts": accounts})
+
+
+@app.route("/api/accounts", methods=["POST"])
+def create_account_api():
+    data = request.json or {}
+    username = data.get("username", "").strip()
+    if not username:
+        return jsonify({"error": "Username is required."}), 400
+
+    try:
+        account_id = db.create_account(
+            username=username,
+            email=data.get("email"),
+            device_serial=data.get("device_serial"),
+            package_name=data.get("package_name"),
+            proxy_endpoint=data.get("proxy_endpoint"),
+            proxy_label=data.get("proxy_label"),
+            notes=data.get("notes"),
+            status=data.get("status", "active"),
+            password=data.get("password"),
+            totp_seed=data.get("totp_seed"),
+            proxy_secret=data.get("proxy_secret"),
+        )
+        return jsonify({"status": "ok", "account_id": account_id}), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to create account: {e}"}), 500
+
+
+@app.route("/api/accounts/<int:acc_id>", methods=["GET"])
+def get_account_api(acc_id):
+    account = db.get_account_by_id(acc_id)
+    if not account:
+        return jsonify({"error": "Account not found."}), 404
+    return jsonify({"status": "ok", "account": account})
+
+
+@app.route("/api/accounts/<int:acc_id>", methods=["PUT"])
+def update_account_api(acc_id):
+    data = request.json or {}
+    try:
+        updated = db.update_account(
+            account_id=acc_id,
+            username=data.get("username"),
+            email=data.get("email"),
+            device_serial=data.get("device_serial"),
+            package_name=data.get("package_name"),
+            proxy_endpoint=data.get("proxy_endpoint"),
+            proxy_label=data.get("proxy_label"),
+            notes=data.get("notes"),
+            status=data.get("status"),
+            login_status=data.get("login_status"),
+        )
+        if not updated:
+            return jsonify({"error": "Account not found."}), 404
+
+        # Update secrets if provided
+        if any(k in data for k in ("password", "totp_seed", "proxy_secret")):
+            db.save_account_secrets(
+                account_id=acc_id,
+                password=data.get("password"),
+                totp_seed=data.get("totp_seed"),
+                proxy_secret=data.get("proxy_secret"),
+            )
+
+        return jsonify({"status": "ok"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Update failed: {e}"}), 500
+
+
+@app.route("/api/accounts/<int:acc_id>", methods=["DELETE"])
+def delete_account_api(acc_id):
+    deleted = db.delete_account(acc_id)
+    if not deleted:
+        return jsonify({"error": "Account not found."}), 404
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/accounts/<int:acc_id>/credentials", methods=["POST"])
+def update_credentials_api(acc_id):
+    data = request.json or {}
+    db.save_account_secrets(
+        account_id=acc_id,
+        password=data.get("password"),
+        totp_seed=data.get("totp_seed"),
+        proxy_secret=data.get("proxy_secret"),
+    )
+    return jsonify({"status": "ok", "message": "Credentials updated in protected vault."})
+
+
+@app.route("/api/accounts/<int:acc_id>/logs", methods=["GET"])
+def get_account_logs_api(acc_id):
+    logs = db.get_login_logs(account_id=acc_id)
+    return jsonify({"status": "ok", "logs": logs})
+
+
+# ---------------------------------------------------------------------------
+# Clone Package Management Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/clones", methods=["GET"])
+def list_clones():
+    serial = request.args.get("device_serial")
+    clones = db.get_clones(device_serial=serial)
+    return jsonify({"status": "ok", "clones": clones})
+
+
+@app.route("/api/clones/scan", methods=["POST"])
+def scan_clones_api():
+    data = request.json or {}
+    serial = data.get("device_serial")
+    try:
+        candidates = package_scanner.scan_packages(device_serial=serial)
+        return jsonify({"status": "ok", "candidates": candidates})
+    except Exception as e:
+        return jsonify({"error": f"Scan failed: {e}"}), 500
+
+
+@app.route("/api/clones/<int:clone_id>/confirm", methods=["POST"])
+def confirm_clone_api(clone_id):
+    data = request.json or {}
+    confirmed = bool(data.get("is_confirmed", True))
+    success = db.set_clone_confirmed(clone_id, is_confirmed=confirmed)
+    if not success:
+        return jsonify({"error": "Clone entry not found."}), 404
+    return jsonify({"status": "ok", "is_confirmed": confirmed})
+
+
+@app.route("/api/clones/<int:clone_id>", methods=["DELETE"])
+def delete_clone_api(clone_id):
+    success = db.delete_clone(clone_id)
+    if not success:
+        return jsonify({"error": "Clone entry not found."}), 404
+    return jsonify({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Excel Metadata Import / Export Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/excel/template", methods=["GET"])
+def download_excel_template():
+    data = excel_manager.generate_sample_template()
+    return Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=instoper_accounts_template.xlsx"}
+    )
+
+
+@app.route("/api/excel/export", methods=["GET"])
+def export_excel_api():
+    data = excel_manager.export_accounts_to_excel()
+    return Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=instoper_accounts.xlsx"}
+    )
+
+
+@app.route("/api/excel/preview", methods=["POST"])
+def preview_excel_import():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+    file = request.files["file"]
+    if not file.filename.endswith((".xlsx", ".xls")):
+        return jsonify({"error": "Only .xlsx files are supported."}), 400
+
+    content = file.read()
+    result = excel_manager.parse_and_validate_excel(content)
+    return jsonify(result)
+
+
+@app.route("/api/excel/import", methods=["POST"])
+def execute_excel_import():
+    data = request.json or {}
+    to_create = data.get("to_create", [])
+    to_update = data.get("to_update", [])
+    result = excel_manager.execute_import(to_create, to_update)
+    return jsonify({"status": "ok", "result": result})
+
+
+# ---------------------------------------------------------------------------
+# Passphrase-Encrypted Secret Backup / Restore
+# ---------------------------------------------------------------------------
+@app.route("/api/secrets/export", methods=["POST"])
+def export_secrets_api():
+    data = request.json or {}
+    passphrase = data.get("passphrase", "").strip()
+    if not passphrase or len(passphrase) < 4:
+        return jsonify({"error": "Passphrase must be at least 4 characters long."}), 400
+
+    accounts = db.get_accounts()
+    backup_data = {}
+    for acc in accounts:
+        sec = db.get_account_secrets(acc["id"])
+        if any(sec.values()):
+            backup_data[acc["username"]] = {
+                "account_id": acc["id"],
+                "username": acc["username"],
+                "password": sec.get("password"),
+                "totp_seed": sec.get("totp_seed"),
+                "proxy_secret": sec.get("proxy_secret"),
+            }
+
+    try:
+        package_bytes = vault.export_secrets_package(backup_data, passphrase)
+        return Response(
+            package_bytes,
+            mimetype="application/json",
+            headers={"Content-Disposition": "attachment; filename=instoper_secrets_backup.enc.json"}
+        )
+    except Exception as e:
+        return jsonify({"error": f"Failed to export secrets: {e}"}), 500
+
+
+@app.route("/api/secrets/import", methods=["POST"])
+def import_secrets_api():
+    if "file" not in request.files:
+        return jsonify({"error": "No encrypted backup file uploaded."}), 400
+    passphrase = request.form.get("passphrase", "").strip()
+    if not passphrase:
+        return jsonify({"error": "Passphrase is required to decrypt backup."}), 400
+
+    file = request.files["file"]
+    file_bytes = file.read()
+
+    try:
+        secrets_dict = vault.import_secrets_package(file_bytes, passphrase)
+        restored_count = 0
+        for username, creds in secrets_dict.items():
+            acc = db.get_account_by_username(username)
+            if not acc and "account_id" in creds:
+                acc = db.get_account_by_id(creds["account_id"])
+
+            if acc:
+                db.save_account_secrets(
+                    account_id=acc["id"],
+                    password=creds.get("password"),
+                    totp_seed=creds.get("totp_seed"),
+                    proxy_secret=creds.get("proxy_secret"),
+                )
+                restored_count += 1
+
+        return jsonify({
+            "status": "ok",
+            "message": f"Successfully restored secrets for {restored_count} account(s)."
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Import failed: {e}"}), 500
+
+
+# ---------------------------------------------------------------------------
+# Account Login & Batch Execution Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/api/accounts/<int:acc_id>/login", methods=["POST"])
+def single_account_login_api(acc_id):
+    if batch_login_manager.state == "running":
+        return jsonify({"error": "A batch login operation is currently running."}), 400
+
+    def run_single():
+        service = login_flow.InstagramAccountLoginService(log_callback=log_listener)
+        service.login_account(acc_id)
+
+    threading.Thread(target=run_single, daemon=True).start()
+    return jsonify({"status": "started", "message": f"Login triggered for account #{acc_id}"})
+
+
+@app.route("/api/batch-login/start", methods=["POST"])
+def start_batch_login_api():
+    data = request.json or {}
+    account_ids = data.get("account_ids")
+    device_serial = data.get("device_serial")
+
+    started = batch_login_manager.start(account_ids=account_ids, device_serial=device_serial)
+    if not started:
+        return jsonify({"error": "Could not start batch. A batch may already be running or no accounts selected."}), 400
+    return jsonify({"status": "started"})
+
+
+@app.route("/api/batch-login/stop", methods=["POST"])
+def stop_batch_login_api():
+    batch_login_manager.stop()
+    return jsonify({"status": "stopped"})
+
+
+@app.route("/api/batch-login/status", methods=["GET"])
+def get_batch_login_status_api():
+    return jsonify(batch_login_manager.get_status())
 
 
 if __name__ == "__main__":

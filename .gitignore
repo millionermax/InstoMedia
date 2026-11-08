@@ -13,6 +13,11 @@ ENV/
 uploads/*
 !uploads/.gitkeep
 
+# Local database
+data/*.db
+data/*.sqlite
+
+
 # Operating system / IDE
 .DS_Store
 Thumbs.db

@@ -120,6 +120,16 @@
             </div>
         </div>
 
+        <!-- Navigation Tabs -->
+        <div class="flex items-center space-x-1.5 bg-slate-800/90 p-1 rounded-xl border border-slate-700/80">
+            <button id="navTabReels" onclick="switchMainTab('reels')" class="px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-2 bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-md">
+                <i class="fa-solid fa-film"></i> Reel Studio
+            </button>
+            <button id="navTabAccounts" onclick="switchMainTab('accounts')" class="px-4 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-slate-200 transition flex items-center gap-2">
+                <i class="fa-solid fa-users-gear"></i> Accounts & Clones
+            </button>
+        </div>
+
         <!-- Device Status Pill -->
         <div class="flex items-center space-x-4">
             <div id="deviceBadge" class="flex items-center space-x-2.5 px-3.5 py-1.5 rounded-full bg-slate-800/80 border border-slate-700 text-xs font-medium">
@@ -132,6 +142,8 @@
         </div>
     </header>
 
+    <!-- Reel Studio View Container -->
+    <div id="reelsView" class="w-full flex-1">
     <!-- Main Content Grid -->
     <main class="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1700px] mx-auto w-full">
 
@@ -395,6 +407,362 @@
             </div>
         </div>
     </main>
+    </div>
+
+    <!-- Accounts & Clones View Container -->
+    <div id="accountsView" class="hidden w-full flex-1 p-6 max-w-[1700px] mx-auto space-y-6">
+
+        <!-- Top Action Toolbar -->
+        <div class="glass-card p-4 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="w-9 h-9 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                    <i class="fa-solid fa-users"></i>
+                </div>
+                <div>
+                    <h2 class="font-bold text-base text-slate-100 flex items-center gap-2">
+                        Account & Clone Manager
+                        <span id="accountCountBadge" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">0 Accounts</span>
+                    </h2>
+                    <p class="text-xs text-slate-400">Manage multi-account bindings, clone packages, and encrypted credentials</p>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex flex-wrap items-center gap-2.5">
+                <button onclick="openAccountModal()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white shadow-md transition flex items-center gap-2">
+                    <i class="fa-solid fa-user-plus"></i> Add Account
+                </button>
+                <button onclick="scanClones()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-2">
+                    <i class="fa-solid fa-radar text-pink-400"></i> Scan Clones
+                </button>
+
+                <!-- Excel Menu -->
+                <div class="flex items-center rounded-xl bg-slate-800/80 border border-slate-700/80 p-0.5">
+                    <a href="/api/excel/template" class="px-3 py-1.5 text-xs text-slate-300 hover:text-white transition flex items-center gap-1.5" title="Download sample format">
+                        <i class="fa-solid fa-file-excel text-emerald-400"></i> Template
+                    </a>
+                    <div class="h-4 w-px bg-slate-700"></div>
+                    <a href="/api/excel/export" class="px-3 py-1.5 text-xs text-slate-300 hover:text-white transition flex items-center gap-1.5" title="Export all metadata">
+                        <i class="fa-solid fa-download text-emerald-400"></i> Export
+                    </a>
+                    <div class="h-4 w-px bg-slate-700"></div>
+                    <button onclick="openExcelModal()" class="px-3 py-1.5 text-xs text-slate-300 hover:text-white transition flex items-center gap-1.5" title="Import metadata spreadsheet">
+                        <i class="fa-solid fa-upload text-emerald-400"></i> Import
+                    </button>
+                </div>
+
+                <!-- Vault Backup / Restore -->
+                <button onclick="openSecretsModal()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 transition flex items-center gap-2">
+                    <i class="fa-solid fa-vault"></i> Secret Vault
+                </button>
+
+                <!-- Batch Login -->
+                <button onclick="startBatchLogin()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-md transition flex items-center gap-2">
+                    <i class="fa-solid fa-arrow-right-to-bracket"></i> Batch Login
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Account Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <!-- Left: Accounts Table (8 Cols) -->
+            <div class="lg:col-span-8 flex flex-col space-y-4">
+                <div class="glass-card p-5 space-y-4 shadow-xl">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                        <div class="flex items-center space-x-2">
+                            <span class="text-xs font-semibold uppercase text-slate-400">Filter Status:</span>
+                            <div class="flex space-x-1.5 text-xs">
+                                <button onclick="filterAccounts('all')" id="filterAll" class="px-2.5 py-1 rounded-lg bg-pink-500/20 text-pink-300 border border-pink-500/30 font-medium">All</button>
+                                <button onclick="filterAccounts('active')" id="filterActive" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-slate-200">Active</button>
+                                <button onclick="filterAccounts('logged_in')" id="filterLoggedIn" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-slate-200">Logged In</button>
+                                <button onclick="filterAccounts('needs_action')" id="filterNeedsAction" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-slate-200">Needs Action</button>
+                            </div>
+                        </div>
+                        <button onclick="loadAccounts()" class="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5">
+                            <i class="fa-solid fa-rotate-right"></i> Refresh
+                        </button>
+                    </div>
+
+                    <!-- Accounts Table -->
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs text-slate-300">
+                            <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-800 uppercase text-[10px] tracking-wider font-semibold">
+                                <tr>
+                                    <th class="py-3 px-3">Account</th>
+                                    <th class="py-3 px-3">Bound Target (Device & Package)</th>
+                                    <th class="py-3 px-3">Proxy</th>
+                                    <th class="py-3 px-3">Vault</th>
+                                    <th class="py-3 px-3">Login State</th>
+                                    <th class="py-3 px-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="accountsTableBody" class="divide-y divide-slate-800/80">
+                                <tr>
+                                    <td colspan="6" class="py-8 text-center text-slate-500">Loading accounts...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Clone Packages & Batch Monitor (4 Cols) -->
+            <div class="lg:col-span-4 flex flex-col space-y-5">
+
+                <!-- 1. Clone Inventory Card -->
+                <div class="glass-card p-5 space-y-4 shadow-xl">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                        <h3 class="font-bold text-sm text-slate-100 flex items-center gap-2">
+                            <i class="fa-solid fa-layer-group text-pink-400"></i> Clone Inventory
+                        </h3>
+                        <span id="clonesCountBadge" class="text-xs text-slate-400">0 Packages</span>
+                    </div>
+
+                    <div id="clonesList" class="space-y-2.5 max-h-[300px] custom-scroll overflow-y-auto pr-1">
+                        <div class="text-center py-6 text-slate-500 text-xs">Click 'Scan Clones' to detect packages on connected device.</div>
+                    </div>
+                </div>
+
+                <!-- 2. Batch Execution Monitor -->
+                <div class="glass-card p-5 space-y-4 shadow-xl">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                        <h3 class="font-bold text-sm text-slate-100 flex items-center gap-2">
+                            <i class="fa-solid fa-gauge-high text-indigo-400"></i> Batch Login Monitor
+                        </h3>
+                        <span id="batchStateBadge" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">Idle</span>
+                    </div>
+
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between text-xs text-slate-300">
+                            <span>Progress: <span id="batchProgressText" class="font-semibold text-slate-100">0 / 0</span></span>
+                            <span id="batchCurrentAcc" class="text-pink-400 truncate max-w-[160px]">None</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                            <div id="batchProgressBar" class="bg-gradient-to-r from-indigo-500 to-pink-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+
+                        <!-- Stats Pills -->
+                        <div class="grid grid-cols-3 gap-2 pt-2 text-center text-[11px]">
+                            <div class="p-2 rounded-lg bg-emerald-950/40 border border-emerald-800/40">
+                                <div class="text-emerald-400 font-bold text-sm" id="batchStatSuccess">0</div>
+                                <div class="text-emerald-300 text-[10px]">Success</div>
+                            </div>
+                            <div class="p-2 rounded-lg bg-amber-950/40 border border-amber-800/40">
+                                <div class="text-amber-400 font-bold text-sm" id="batchStatAction">0</div>
+                                <div class="text-amber-300 text-[10px]">Action Req</div>
+                            </div>
+                            <div class="p-2 rounded-lg bg-rose-950/40 border border-rose-800/40">
+                                <div class="text-rose-400 font-bold text-sm" id="batchStatFailed">0</div>
+                                <div class="text-rose-300 text-[10px]">Failed</div>
+                            </div>
+                        </div>
+
+                        <!-- Control Buttons -->
+                        <div class="flex items-center gap-2 pt-2">
+                            <button id="batchStartBtn" onclick="startBatchLogin()" class="flex-1 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-play"></i> Start Batch
+                            </button>
+                            <button id="batchStopBtn" onclick="stopBatchLogin()" class="hidden py-2 px-4 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white transition flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-stop"></i> Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- MODALS SECTION -->
+    <!-- ========================================================================= -->
+
+    <!-- 1. Add / Edit Account Modal -->
+    <div id="accountModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass-card max-w-xl w-full p-6 space-y-5 shadow-2xl border border-slate-700 animate-in fade-in zoom-in duration-200">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 id="accountModalTitle" class="font-bold text-base text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-user text-pink-500"></i> Add Account
+                </h3>
+                <button onclick="closeAccountModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <form id="accountForm" onsubmit="handleAccountFormSubmit(event)" class="space-y-4">
+                <input type="hidden" id="formAccountId" value="">
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Username *</label>
+                        <input id="formUsername" type="text" required placeholder="my_instagram_username"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Email (Optional)</label>
+                        <input id="formEmail" type="email" placeholder="user@example.com"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Device Serial</label>
+                        <input id="formDeviceSerial" type="text" placeholder="e.g. 0624531123033570"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Package Name</label>
+                        <input id="formPackageName" type="text" placeholder="com.instagram.android" value="com.instagram.android"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Proxy Endpoint</label>
+                        <input id="formProxyEndpoint" type="text" placeholder="http://192.168.1.1:8080"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Proxy Label</label>
+                        <input id="formProxyLabel" type="text" placeholder="US Residential #1"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                </div>
+
+                <!-- Protected Secrets Section -->
+                <div class="p-3.5 bg-slate-900/80 border border-amber-500/30 rounded-xl space-y-3">
+                    <div class="flex items-center justify-between text-xs font-semibold text-amber-300">
+                        <span class="flex items-center gap-1.5"><i class="fa-solid fa-shield-halved"></i> Protected Vault Credentials</span>
+                        <span class="text-[10px] text-slate-400 font-normal">Encrypted with Windows DPAPI</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="space-y-1">
+                            <label class="text-[11px] text-slate-400">Password</label>
+                            <input id="formPassword" type="password" placeholder="••••••••" autocomplete="new-password"
+                                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[11px] text-slate-400">TOTP 2FA Seed (RFC 6238)</label>
+                            <input id="formTotpSeed" type="text" placeholder="JBSWY3DPEHPK3PXP"
+                                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400 font-mono">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-300">Notes</label>
+                    <textarea id="formNotes" rows="2" placeholder="Account purpose, warm-up notes..."
+                              class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500"></textarea>
+                </div>
+
+                <div class="flex items-center justify-end space-x-2.5 pt-2 border-t border-slate-800">
+                    <button type="button" onclick="closeAccountModal()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white bg-slate-800 transition">Cancel</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white transition">Save Account</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 2. Excel Import & Preview Modal -->
+    <div id="excelModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass-card max-w-2xl w-full p-6 space-y-5 shadow-2xl border border-slate-700">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-file-excel text-emerald-400"></i> Import Metadata from Excel
+                </h3>
+                <button onclick="closeExcelModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Upload Area -->
+            <div id="excelDropzone" onclick="document.getElementById('excelFileInput').click()"
+                 class="border-2 border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl p-6 text-center cursor-pointer bg-slate-900/40 transition">
+                <input type="file" id="excelFileInput" accept=".xlsx" class="hidden" onchange="handleExcelFileSelect(this)">
+                <i class="fa-solid fa-file-arrow-up text-3xl text-emerald-400 mb-2"></i>
+                <p class="text-xs font-semibold text-slate-200">Click to upload or drag & drop .xlsx file</p>
+                <p class="text-[11px] text-slate-400 mt-1">Formula-like cells will be automatically neutralized.</p>
+            </div>
+
+            <!-- Preview Container -->
+            <div id="excelPreviewContainer" class="hidden space-y-3">
+                <div class="flex items-center justify-between text-xs">
+                    <span class="font-semibold text-slate-300">Validation Preview:</span>
+                    <div class="flex gap-2">
+                        <span id="previewToCreate" class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">0 New</span>
+                        <span id="previewToUpdate" class="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">0 Updates</span>
+                    </div>
+                </div>
+
+                <!-- Errors list if any -->
+                <div id="excelErrorsList" class="hidden max-h-28 overflow-y-auto p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/50 text-[11px] text-rose-300 space-y-1"></div>
+
+                <div class="flex items-center justify-end space-x-2.5 pt-2">
+                    <button type="button" onclick="closeExcelModal()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white bg-slate-800 transition">Cancel</button>
+                    <button id="excelCommitBtn" onclick="commitExcelImport()" class="px-5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition">Confirm & Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Secret Vault Backup & Restore Modal -->
+    <div id="secretsModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass-card max-w-lg w-full p-6 space-y-5 shadow-2xl border border-slate-700">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-vault text-amber-400"></i> Secret Vault Backup & Restore
+                </h3>
+                <button onclick="closeSecretsModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b border-slate-800">
+                <button id="vaultTabExportBtn" onclick="switchVaultTab('export')" class="flex-1 pb-2 text-xs font-semibold border-b-2 border-amber-400 text-amber-300">
+                    <i class="fa-solid fa-lock"></i> Encrypted Backup
+                </button>
+                <button id="vaultTabImportBtn" onclick="switchVaultTab('import')" class="flex-1 pb-2 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200">
+                    <i class="fa-solid fa-key"></i> Restore Backup
+                </button>
+            </div>
+
+            <!-- Export Form -->
+            <div id="vaultExportForm" class="space-y-4">
+                <p class="text-xs text-slate-400">Generates an AES-256-GCM encrypted file containing all passwords and TOTP seeds, protected by your custom passphrase.</p>
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-300">Set Backup Passphrase *</label>
+                    <input id="vaultExportPass" type="password" placeholder="Enter secure passphrase"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-400">
+                </div>
+                <button onclick="executeSecretsExport()" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 transition flex items-center justify-center gap-2 font-bold">
+                    <i class="fa-solid fa-download"></i> Generate & Download Backup (.enc.json)
+                </button>
+            </div>
+
+            <!-- Import Form -->
+            <div id="vaultImportForm" class="hidden space-y-4">
+                <p class="text-xs text-slate-400">Upload your `.enc.json` backup file and enter the passphrase used during export.</p>
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-300">Encrypted Backup File *</label>
+                    <input id="vaultImportFile" type="file" accept=".json,.enc"
+                           class="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700">
+                </div>
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-slate-300">Passphrase *</label>
+                    <input id="vaultImportPass" type="password" placeholder="Enter your passphrase"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-400">
+                </div>
+                <button onclick="executeSecretsImport()" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-unlock"></i> Decrypt & Restore Credentials
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Footer -->
     <footer class="border-t border-slate-800 py-3 text-center text-xs text-slate-500">
@@ -741,6 +1109,541 @@
             const input = document.getElementById('resultLinkInput');
             navigator.clipboard.writeText(input.value);
             alert("Reel URL copied to clipboard!");
+        }
+
+        // =========================================================================
+        // ACCOUNTS & CLONES MANAGER LOGIC
+        // =========================================================================
+        let allAccounts = [];
+        let currentStatusFilter = 'all';
+        let excelParsedData = null;
+        let batchPollInterval = null;
+
+        function switchMainTab(tab) {
+            const reelsView = document.getElementById('reelsView');
+            const accountsView = document.getElementById('accountsView');
+            const tabReels = document.getElementById('navTabReels');
+            const tabAccounts = document.getElementById('navTabAccounts');
+
+            if (tab === 'reels') {
+                reelsView.classList.remove('hidden');
+                accountsView.classList.add('hidden');
+                tabReels.className = "px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-2 bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-md";
+                tabAccounts.className = "px-4 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-slate-200 transition flex items-center gap-2";
+            } else {
+                reelsView.classList.add('hidden');
+                accountsView.classList.remove('hidden');
+                tabAccounts.className = "px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-2 bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-md";
+                tabReels.className = "px-4 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-slate-200 transition flex items-center gap-2";
+                loadAccounts();
+                loadClones();
+                pollBatchStatus();
+            }
+        }
+
+        async function loadAccounts() {
+            try {
+                const res = await fetch('/api/accounts');
+                const data = await res.json();
+                allAccounts = data.accounts || [];
+                document.getElementById('accountCountBadge').innerText = `${allAccounts.length} Accounts`;
+                renderAccountsTable();
+            } catch (e) {
+                console.error("Failed to load accounts", e);
+            }
+        }
+
+        function filterAccounts(status) {
+            currentStatusFilter = status;
+            ['all', 'active', 'logged_in', 'needs_action'].forEach(s => {
+                const btn = document.getElementById('filter' + s.charAt(0).toUpperCase() + s.slice(1).replace('_', ''));
+                if (btn) {
+                    if (s === status) {
+                        btn.className = "px-2.5 py-1 rounded-lg bg-pink-500/20 text-pink-300 border border-pink-500/30 font-medium";
+                    } else {
+                        btn.className = "px-2.5 py-1 rounded-lg text-slate-400 hover:text-slate-200";
+                    }
+                }
+            });
+            renderAccountsTable();
+        }
+
+        function renderAccountsTable() {
+            const tbody = document.getElementById('accountsTableBody');
+            let filtered = allAccounts;
+
+            if (currentStatusFilter !== 'all') {
+                if (currentStatusFilter === 'active') {
+                    filtered = allAccounts.filter(a => a.status === 'active');
+                } else {
+                    filtered = allAccounts.filter(a => a.login_status === currentStatusFilter);
+                }
+            }
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-8 text-center text-slate-500">No accounts found matching filter.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = filtered.map(acc => {
+                const pkg = acc.package_name || 'com.instagram.android';
+                const dev = acc.device_serial || 'Any Device';
+
+                // Login status badge
+                let statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">Idle</span>`;
+                if (acc.login_status === 'logged_in') {
+                    statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Logged In</span>`;
+                } else if (acc.login_status === 'needs_action') {
+                    statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-amber-950/60 text-amber-300 border border-amber-800/60 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> Action Req</span>`;
+                } else if (acc.login_status === 'failed_credentials' || acc.login_status === 'error') {
+                    statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/60 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> Failed</span>`;
+                }
+
+                // Vault badges
+                const pwdBadge = acc.has_password ? `<span title="Password Protected" class="text-amber-400"><i class="fa-solid fa-key"></i></span>` : `<span title="No Password" class="text-slate-600"><i class="fa-solid fa-key"></i></span>`;
+                const totpBadge = acc.has_totp ? `<span title="2FA Seed Protected" class="text-emerald-400"><i class="fa-solid fa-shield"></i></span>` : `<span title="No 2FA Seed" class="text-slate-600"><i class="fa-solid fa-shield"></i></span>`;
+
+                const proxyText = acc.proxy_label ? `${acc.proxy_label}` : (acc.proxy_endpoint ? `${acc.proxy_endpoint}` : '<span class="text-slate-600">Direct</span>');
+
+                return `
+                    <tr class="hover:bg-slate-900/40 transition">
+                        <td class="py-3 px-3">
+                            <div class="font-semibold text-slate-100 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full ${acc.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
+                                ${acc.username}
+                            </div>
+                            <div class="text-[10px] text-slate-500">${acc.email || 'No email registered'}</div>
+                        </td>
+                        <td class="py-3 px-3">
+                            <div class="font-mono text-[11px] text-slate-300">${pkg}</div>
+                            <div class="text-[10px] text-slate-500 font-mono">${dev}</div>
+                        </td>
+                        <td class="py-3 px-3 text-slate-300 truncate max-w-[140px]">${proxyText}</td>
+                        <td class="py-3 px-3">
+                            <div class="flex items-center space-x-2 text-xs">
+                                ${pwdBadge}
+                                ${totpBadge}
+                            </div>
+                        </td>
+                        <td class="py-3 px-3">${statusBadge}</td>
+                        <td class="py-3 px-3 text-right">
+                            <div class="flex items-center justify-end space-x-1.5">
+                                <button onclick="triggerSingleLogin(${acc.id})" title="Launch & Authenticate" class="p-1.5 text-xs text-indigo-400 hover:text-white bg-indigo-950/40 hover:bg-indigo-600 border border-indigo-800/60 rounded-lg transition">
+                                    <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                                </button>
+                                <button onclick="editAccountModal(${acc.id})" title="Edit Account" class="p-1.5 text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition">
+                                    <i class="fa-solid fa-pen-to-square"></i>
+                                </button>
+                                <button onclick="deleteAccount(${acc.id})" title="Delete Account" class="p-1.5 text-xs text-rose-400 hover:text-white bg-rose-950/40 hover:bg-rose-600 border border-rose-800/60 rounded-lg transition">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // --- Account Modal ---
+        function openAccountModal() {
+            document.getElementById('accountModalTitle').innerHTML = `<i class="fa-solid fa-user text-pink-500"></i> Add Account`;
+            document.getElementById('formAccountId').value = '';
+            document.getElementById('formUsername').value = '';
+            document.getElementById('formEmail').value = '';
+            document.getElementById('formDeviceSerial').value = '';
+            document.getElementById('formPackageName').value = 'com.instagram.android';
+            document.getElementById('formProxyEndpoint').value = '';
+            document.getElementById('formProxyLabel').value = '';
+            document.getElementById('formPassword').value = '';
+            document.getElementById('formTotpSeed').value = '';
+            document.getElementById('formNotes').value = '';
+            document.getElementById('accountModal').classList.remove('hidden');
+        }
+
+        function editAccountModal(id) {
+            const acc = allAccounts.find(a => a.id === id);
+            if (!acc) return;
+            document.getElementById('accountModalTitle').innerHTML = `<i class="fa-solid fa-user-pen text-indigo-400"></i> Edit Account: ${acc.username}`;
+            document.getElementById('formAccountId').value = acc.id;
+            document.getElementById('formUsername').value = acc.username || '';
+            document.getElementById('formEmail').value = acc.email || '';
+            document.getElementById('formDeviceSerial').value = acc.device_serial || '';
+            document.getElementById('formPackageName').value = acc.package_name || 'com.instagram.android';
+            document.getElementById('formProxyEndpoint').value = acc.proxy_endpoint || '';
+            document.getElementById('formProxyLabel').value = acc.proxy_label || '';
+            document.getElementById('formPassword').value = '';
+            document.getElementById('formTotpSeed').value = '';
+            document.getElementById('formNotes').value = acc.notes || '';
+            document.getElementById('accountModal').classList.remove('hidden');
+        }
+
+        function closeAccountModal() {
+            document.getElementById('accountModal').classList.add('hidden');
+        }
+
+        async function handleAccountFormSubmit(event) {
+            event.preventDefault();
+            const id = document.getElementById('formAccountId').value;
+            const payload = {
+                username: document.getElementById('formUsername').value.trim(),
+                email: document.getElementById('formEmail').value.trim() || null,
+                device_serial: document.getElementById('formDeviceSerial').value.trim() || null,
+                package_name: document.getElementById('formPackageName').value.trim() || 'com.instagram.android',
+                proxy_endpoint: document.getElementById('formProxyEndpoint').value.trim() || null,
+                proxy_label: document.getElementById('formProxyLabel').value.trim() || null,
+                notes: document.getElementById('formNotes').value.trim() || null,
+            };
+
+            const pwd = document.getElementById('formPassword').value;
+            if (pwd) payload.password = pwd;
+            const totp = document.getElementById('formTotpSeed').value.trim();
+            if (totp) payload.totp_seed = totp;
+
+            try {
+                let res;
+                if (id) {
+                    res = await fetch(`/api/accounts/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                } else {
+                    res = await fetch('/api/accounts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                }
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.error || "Failed to save account.");
+                    return;
+                }
+                closeAccountModal();
+                loadAccounts();
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function deleteAccount(id) {
+            if (!confirm("Are you sure you want to delete this account and its vault credentials?")) return;
+            try {
+                const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+                if (res.ok) {
+                    loadAccounts();
+                } else {
+                    alert("Failed to delete account.");
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function triggerSingleLogin(id) {
+            try {
+                const res = await fetch(`/api/accounts/${id}/login`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    alert("Single login process initiated in background. View Live Mirror & Logs for updates.");
+                } else {
+                    alert(data.error || "Could not trigger login.");
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        // --- Clones Inventory Logic ---
+        async function loadClones() {
+            try {
+                const res = await fetch('/api/clones');
+                const data = await res.json();
+                const clones = data.clones || [];
+                document.getElementById('clonesCountBadge').innerText = `${clones.length} Packages`;
+
+                const container = document.getElementById('clonesList');
+                if (clones.length === 0) {
+                    container.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">No clone packages scanned yet. Click 'Scan Clones'.</div>`;
+                    return;
+                }
+
+                container.innerHTML = clones.map(c => `
+                    <div class="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 flex items-center justify-between gap-3 text-xs">
+                        <div class="truncate">
+                            <div class="font-semibold text-slate-200 truncate flex items-center gap-1.5">
+                                ${c.app_name || c.package_name}
+                                ${c.is_confirmed ? `<span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">Confirmed</span>` : `<span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-800">Unconfirmed</span>`}
+                            </div>
+                            <div class="text-[10px] text-slate-400 font-mono truncate">${c.package_name}</div>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <button onclick="toggleCloneConfirm(${c.id}, ${!c.is_confirmed})" class="px-2 py-1 rounded text-[11px] font-semibold ${c.is_confirmed ? 'bg-slate-800 hover:bg-rose-950 hover:text-rose-300 text-slate-300' : 'bg-emerald-600 hover:bg-emerald-500 text-white'} transition">
+                                ${c.is_confirmed ? 'Unconfirm' : 'Confirm'}
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error("Failed to load clones", e);
+            }
+        }
+
+        async function scanClones() {
+            try {
+                const res = await fetch('/api/clones/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+                const data = await res.json();
+                if (res.ok) {
+                    loadClones();
+                    alert(`Scan complete: Found ${data.candidates.length} package candidate(s).`);
+                } else {
+                    alert(data.error || "Scan failed.");
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function toggleCloneConfirm(cloneId, isConfirmed) {
+            try {
+                await fetch(`/api/clones/${cloneId}/confirm`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_confirmed: isConfirmed })
+                });
+                loadClones();
+            } catch (e) {
+                console.error("Toggle confirm failed", e);
+            }
+        }
+
+        // --- Batch Login Logic ---
+        async function startBatchLogin() {
+            try {
+                const res = await fetch('/api/batch-login/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    pollBatchStatus();
+                } else {
+                    alert(data.error || "Could not start batch login.");
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function stopBatchLogin() {
+            try {
+                await fetch('/api/batch-login/stop', { method: 'POST' });
+                pollBatchStatus();
+            } catch (e) {
+                console.error("Stop batch failed", e);
+            }
+        }
+
+        async function pollBatchStatus() {
+            try {
+                const res = await fetch('/api/batch-login/status');
+                const data = await res.json();
+                const state = data.state;
+                const stats = data.stats || {};
+
+                document.getElementById('batchStateBadge').innerText = state.toUpperCase();
+                document.getElementById('batchProgressText').innerText = `${stats.current || 0} / ${stats.total || 0}`;
+                document.getElementById('batchCurrentAcc').innerText = stats.current_account || 'None';
+
+                const pct = stats.total > 0 ? Math.round((stats.current / stats.total) * 100) : 0;
+                document.getElementById('batchProgressBar').style.width = `${pct}%`;
+
+                document.getElementById('batchStatSuccess').innerText = stats.success || 0;
+                document.getElementById('batchStatAction').innerText = stats.needs_action || 0;
+                document.getElementById('batchStatFailed').innerText = stats.failed || 0;
+
+                if (state === 'running') {
+                    document.getElementById('batchStartBtn').classList.add('hidden');
+                    document.getElementById('batchStopBtn').classList.remove('hidden');
+                    if (!batchPollInterval) batchPollInterval = setInterval(pollBatchStatus, 2000);
+                } else {
+                    document.getElementById('batchStartBtn').classList.remove('hidden');
+                    document.getElementById('batchStopBtn').classList.add('hidden');
+                    if (batchPollInterval) {
+                        clearInterval(batchPollInterval);
+                        batchPollInterval = null;
+                    }
+                }
+            } catch (e) {
+                console.error("Batch status poll failed", e);
+            }
+        }
+
+        // --- Excel Import Modal ---
+        function openExcelModal() {
+            document.getElementById('excelFileInput').value = '';
+            document.getElementById('excelPreviewContainer').classList.add('hidden');
+            document.getElementById('excelErrorsList').classList.add('hidden');
+            document.getElementById('excelModal').classList.remove('hidden');
+        }
+
+        function closeExcelModal() {
+            document.getElementById('excelModal').classList.add('hidden');
+        }
+
+        async function handleExcelFileSelect(input) {
+            if (!input.files || !input.files[0]) return;
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/api/excel/preview', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    alert(data.error || "Failed to parse Excel spreadsheet.");
+                    return;
+                }
+
+                excelParsedData = data;
+                document.getElementById('previewToCreate').innerText = `${data.to_create.length} New`;
+                document.getElementById('previewToUpdate').innerText = `${data.to_update.length} Updates`;
+
+                const errorsContainer = document.getElementById('excelErrorsList');
+                if (data.errors && data.errors.length > 0) {
+                    errorsContainer.innerHTML = data.errors.map(err => `<div>• ${err}</div>`).join('');
+                    errorsContainer.classList.remove('hidden');
+                } else {
+                    errorsContainer.classList.add('hidden');
+                }
+
+                document.getElementById('excelPreviewContainer').classList.remove('hidden');
+            } catch (e) {
+                alert("Upload error: " + e);
+            }
+        }
+
+        async function commitExcelImport() {
+            if (!excelParsedData) return;
+            try {
+                const res = await fetch('/api/excel/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        to_create: excelParsedData.to_create,
+                        to_update: excelParsedData.to_update
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`Import completed! Created: ${data.result.created}, Updated: ${data.result.updated}`);
+                    closeExcelModal();
+                    loadAccounts();
+                } else {
+                    alert(data.error || "Import failed.");
+                }
+            } catch (e) {
+                alert("Commit error: " + e);
+            }
+        }
+
+        // --- Secrets Modal ---
+        function openSecretsModal() {
+            document.getElementById('secretsModal').classList.remove('hidden');
+            switchVaultTab('export');
+        }
+
+        function closeSecretsModal() {
+            document.getElementById('secretsModal').classList.add('hidden');
+        }
+
+        function switchVaultTab(tab) {
+            const expBtn = document.getElementById('vaultTabExportBtn');
+            const impBtn = document.getElementById('vaultTabImportBtn');
+            const expForm = document.getElementById('vaultExportForm');
+            const impForm = document.getElementById('vaultImportForm');
+
+            if (tab === 'export') {
+                expBtn.className = "flex-1 pb-2 text-xs font-semibold border-b-2 border-amber-400 text-amber-300";
+                impBtn.className = "flex-1 pb-2 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200";
+                expForm.classList.remove('hidden');
+                impForm.classList.add('hidden');
+            } else {
+                impBtn.className = "flex-1 pb-2 text-xs font-semibold border-b-2 border-amber-400 text-amber-300";
+                expBtn.className = "flex-1 pb-2 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200";
+                impForm.classList.remove('hidden');
+                expForm.classList.add('hidden');
+            }
+        }
+
+        async function executeSecretsExport() {
+            const pass = document.getElementById('vaultExportPass').value.trim();
+            if (!pass || pass.length < 4) {
+                alert("Passphrase must be at least 4 characters long.");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/secrets/export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ passphrase: pass })
+                });
+
+                if (!res.ok) {
+                    const data = await res.json();
+                    alert(data.error || "Failed to export secrets.");
+                    return;
+                }
+
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "instoper_secrets_backup.enc.json";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                closeSecretsModal();
+                alert("Encrypted vault backup downloaded successfully!");
+            } catch (e) {
+                alert("Export error: " + e);
+            }
+        }
+
+        async function executeSecretsImport() {
+            const fileInput = document.getElementById('vaultImportFile');
+            const pass = document.getElementById('vaultImportPass').value.trim();
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert("Please select your .enc.json backup file.");
+                return;
+            }
+            if (!pass) {
+                alert("Passphrase is required to decrypt backup.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('passphrase', pass);
+
+            try {
+                const res = await fetch('/api/secrets/import', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(data.message || "Secrets restored successfully!");
+                    closeSecretsModal();
+                    loadAccounts();
+                } else {
+                    alert(data.error || "Decryption failed. Please verify your passphrase.");
+                }
+            } catch (e) {
+                alert("Import error: " + e);
+            }
         }
     </script>
 </body>

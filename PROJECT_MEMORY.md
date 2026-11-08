@@ -132,3 +132,19 @@
   - `.gitignore`: Configured to exclude large uploaded test videos, `__pycache__`, and OS artifacts.
   - Git repository initialized, remote created on GitHub (`ilovekushgola/Instoper`), and pushed to `main` branch.
 - **Verification & Outcome**: Code committed and pushed to `https://github.com/ilovekushgola/Instoper`.
+
+---
+
+### [2026-11-08 19:42:00] Clone-Aware Accounts, Login Automation, & Spreadsheet Engine
+- **User Request**: "/goal E:/Download/Code/Platfrom-tool/plan/2026-11-08_clone-account-login-import-export.md Follow these instrution"
+- **Context & Problem**: Instoper previously only automated a single hardcoded package (`com.instagram.android`) and lacked account persistence, clone package inventory, credential vaulting, spreadsheet import/export, and single/batch login with TOTP 2FA.
+- **Action Taken & Changes**:
+  - `vault.py`: Built Windows DPAPI protection (`CryptProtectData` / `CryptUnprotectData`) for local secrets, plus PBKDF2 HMAC-SHA256 (120k rounds) + AES-256-GCM passphrase-encrypted backup export/import with wrong-passphrase rejection.
+  - `db.py`: Created SQLite relational database with partial unique index `idx_account_device_package` preventing two accounts from sharing the same device/package pair, cascade deletion, clone tracking, and audit logs.
+  - `package_scanner.py`: Built ADB package discovery scanning third-party and clone-candidate apps, resolving foreground packages, and tracking operator confirmation status.
+  - `excel_manager.py`: Implemented openpyxl Excel metadata import/export with formula injection neutralization (`=`, `+`, `-`, `@`), row-level error validation, and create/update classification.
+  - `login_flow.py`: Built `InstagramAccountLoginService` with human cadence typing, RFC 6238 TOTP authenticator generation via `pyotp`, and automated pause on unsupported challenges (CAPTCHA, SMS, checkpoints). Created `BatchLoginManager` for isolated sequential multi-account execution.
+  - `app.py`: Registered 15+ REST endpoints (`/api/accounts`, `/api/clones`, `/api/excel`, `/api/secrets`, `/api/batch-login`). Preserved existing Reel Studio workflow with optional package override.
+  - `templates/index.html`: Added Tab Switcher (Reel Studio vs Accounts & Clones) and created a comprehensive dashboard with accounts table, clone inventory, batch login monitor, and modals for account editing, Excel preview, and secret vaulting.
+  - `tests/test_full_suite.py`: Created 8 comprehensive automated unit/integration tests validating all success criteria.
+- **Verification & Outcome**: Ran test suite (`python -m unittest tests/test_full_suite.py`) with 8 tests passing in 0.286s with 100% success. Verified server routes and UI integrity.

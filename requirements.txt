@@ -2,3 +2,6 @@ uiautomator2>=2.16.23
 Flask>=3.0.0
 Werkzeug>=3.0.0
 Pillow>=10.0.0
+openpyxl>=3.1.0
+cryptography>=41.0.0
+pyotp>=2.9.0
