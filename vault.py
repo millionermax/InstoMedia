@@ -10,7 +10,8 @@ import json
 import base64
 import ctypes
 import ctypes.wintypes
-from typing import Dict, Any, Optional
+import urllib.parse
+from typing import Dict, Any, Optional, Tuple
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -186,3 +187,68 @@ def import_secrets_package(package_bytes: bytes, passphrase: str) -> Dict[str, A
         raise ValueError("Incorrect passphrase or corrupted secret package.")
     except Exception as e:
         raise ValueError(f"Decryption failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 3. Proxy URL Parsing & Credential Redaction
+# ---------------------------------------------------------------------------
+def parse_proxy_credentials(raw_proxy: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Parses a raw proxy string into (sanitized_endpoint, auth_secret).
+    Supports:
+      - http://user:pass@host:port -> ('http://host:port', 'user:pass')
+      - host:port:user:pass -> ('host:port', 'user:pass')
+      - http://host:port -> ('http://host:port', None)
+    """
+    if not raw_proxy:
+        return None, None
+
+    raw = raw_proxy.strip()
+    if not raw:
+        return None, None
+
+    # Format A: host:port:user:pass (legacy text list format)
+    parts = raw.split(":")
+    if len(parts) == 4 and not raw.startswith(("http://", "https://", "socks5://", "socks4://")):
+        endpoint = f"{parts[0]}:{parts[1]}"
+        secret = f"{parts[2]}:{parts[3]}"
+        return endpoint, secret
+
+    # Format B: URL schema [http|https|socks5]://[user:pass@]host[:port]
+    has_scheme = "://" in raw
+    url_to_parse = raw if has_scheme else "http://" + raw
+    try:
+        parsed = urllib.parse.urlsplit(url_to_parse)
+        if parsed.username or parsed.password:
+            user = parsed.username or ""
+            pwd = parsed.password or ""
+            host = parsed.hostname or ""
+            netloc = f"{host}:{parsed.port}" if parsed.port else host
+            scheme = parsed.scheme if has_scheme else ""
+            endpoint = f"{scheme}://{netloc}" if scheme else netloc
+            secret = f"{user}:{pwd}"
+            return endpoint, secret
+        return raw, None
+    except Exception:
+        return raw, None
+
+
+def redact_proxy_url(raw_proxy: Optional[str]) -> Optional[str]:
+    """
+    Returns a safe, redacted proxy string masking any embedded credentials (username & password).
+    e.g. 'http://user:password@host:8080' -> 'http://***:***@host:8080'
+    """
+    if not raw_proxy:
+        return None
+
+    endpoint, secret = parse_proxy_credentials(raw_proxy)
+    if not endpoint:
+        return None
+
+    if secret:
+        if "://" in endpoint:
+            scheme, host = endpoint.split("://", 1)
+            return f"{scheme}://***:***@{host}"
+        return f"***:***@{endpoint}"
+
+    return endpoint

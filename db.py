@@ -43,6 +43,7 @@ def init_db(db_path: Optional[str] = None):
                 package_name TEXT,
                 proxy_endpoint TEXT,
                 proxy_label TEXT,
+                tag TEXT,
                 notes TEXT,
                 status TEXT DEFAULT 'active',
                 login_status TEXT DEFAULT 'idle',
@@ -51,6 +52,12 @@ def init_db(db_path: Optional[str] = None):
                 updated_at TEXT NOT NULL
             );
         """)
+
+        # Migration: ensure 'tag' column exists if db was created earlier
+        cursor.execute("PRAGMA table_info(accounts);")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if "tag" not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN tag TEXT;")
 
         # Partial Unique Index: prevent two accounts mapping to same non-empty device/package pair
         cursor.execute("""
@@ -113,6 +120,7 @@ def create_account(
     package_name: Optional[str] = None,
     proxy_endpoint: Optional[str] = None,
     proxy_label: Optional[str] = None,
+    tag: Optional[str] = None,
     notes: Optional[str] = None,
     status: str = "active",
     password: Optional[str] = None,
@@ -127,6 +135,15 @@ def create_account(
 
     device_serial = device_serial.strip() if device_serial else None
     package_name = package_name.strip() if package_name else None
+    tag = tag.strip() if tag else None
+
+    # Sanitize proxy endpoint and extract authentication credentials into vault
+    clean_proxy = proxy_endpoint
+    if proxy_endpoint:
+        parsed_endpoint, extracted_secret = vault.parse_proxy_credentials(proxy_endpoint)
+        clean_proxy = parsed_endpoint
+        if extracted_secret and not proxy_secret:
+            proxy_secret = extracted_secret
 
     now = _utcnow()
     with get_connection(db_path) as conn:
@@ -147,10 +164,10 @@ def create_account(
         cursor.execute(
             """
             INSERT INTO accounts (username, email, device_serial, package_name, 
-                                proxy_endpoint, proxy_label, notes, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                proxy_endpoint, proxy_label, tag, notes, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (username, email, device_serial, package_name, proxy_endpoint, proxy_label, notes, status, now, now),
+            (username, email, device_serial, package_name, clean_proxy, proxy_label, tag, notes, status, now, now),
         )
         account_id = cursor.lastrowid
 
@@ -178,6 +195,7 @@ def update_account(
     package_name: Optional[str] = None,
     proxy_endpoint: Optional[str] = None,
     proxy_label: Optional[str] = None,
+    tag: Optional[str] = None,
     notes: Optional[str] = None,
     status: Optional[str] = None,
     login_status: Optional[str] = None,
@@ -194,6 +212,14 @@ def update_account(
         new_user = username.strip() if username is not None else acc["username"]
         new_dev = device_serial.strip() if device_serial is not None else acc["device_serial"]
         new_pkg = package_name.strip() if package_name is not None else acc["package_name"]
+        new_tag = tag.strip() if tag is not None else (acc["tag"] if "tag" in acc.keys() else None)
+
+        clean_proxy = proxy_endpoint if proxy_endpoint is not None else acc["proxy_endpoint"]
+        if proxy_endpoint is not None:
+            parsed_endpoint, extracted_secret = vault.parse_proxy_credentials(proxy_endpoint)
+            clean_proxy = parsed_endpoint
+            if extracted_secret:
+                save_account_secrets(account_id, proxy_secret=extracted_secret, db_path=db_path)
 
         # Check duplicate device/package constraint
         if new_dev and new_pkg:
@@ -215,8 +241,9 @@ def update_account(
                 email = coalesce(?, email),
                 device_serial = ?,
                 package_name = ?,
-                proxy_endpoint = coalesce(?, proxy_endpoint),
+                proxy_endpoint = ?,
                 proxy_label = coalesce(?, proxy_label),
+                tag = coalesce(?, tag),
                 notes = coalesce(?, notes),
                 status = coalesce(?, status),
                 login_status = coalesce(?, login_status),
@@ -228,8 +255,9 @@ def update_account(
                 email,
                 new_dev,
                 new_pkg,
-                proxy_endpoint,
+                clean_proxy,
                 proxy_label,
+                new_tag,
                 notes,
                 status,
                 login_status,
@@ -257,6 +285,7 @@ def get_account_by_id(account_id: int, db_path: Optional[str] = None) -> Optiona
         if not row:
             return None
         res = dict(row)
+        res["proxy_endpoint"] = vault.redact_proxy_url(res.get("proxy_endpoint"))
         # Include secret flags (never the secrets themselves!)
         cursor.execute("SELECT password_encrypted, totp_seed_encrypted, proxy_secret_encrypted FROM secrets WHERE account_id = ?;", (account_id,))
         sec = cursor.fetchone()
@@ -291,6 +320,7 @@ def get_accounts(status: Optional[str] = None, db_path: Optional[str] = None) ->
         accounts = []
         for r in rows:
             acc = dict(r)
+            acc["proxy_endpoint"] = vault.redact_proxy_url(acc.get("proxy_endpoint"))
             cursor.execute("SELECT password_encrypted, totp_seed_encrypted, proxy_secret_encrypted FROM secrets WHERE account_id = ?;", (acc["id"],))
             sec = cursor.fetchone()
             acc["has_password"] = bool(sec and sec["password_encrypted"])

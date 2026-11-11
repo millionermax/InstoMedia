@@ -6,12 +6,70 @@ Strictly excludes passwords, TOTP seeds, and secret keys.
 """
 
 import io
+import csv
+import secrets
+import time
+import threading
 from typing import List, Dict, Any, Tuple, Optional
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 import db
+import vault
+
+# ---------------------------------------------------------------------------
+# Server-Side Ephemeral Import Sessions (Prevents Secrets from Entering Browser)
+# ---------------------------------------------------------------------------
+_import_sessions: Dict[str, Dict[str, Any]] = {}
+_import_sessions_lock = threading.Lock()
+IMPORT_SESSION_TTL_SECONDS = 900  # 15 minutes
+
+
+def cleanup_expired_import_sessions():
+    """Removes sessions older than IMPORT_SESSION_TTL_SECONDS."""
+    now = time.time()
+    with _import_sessions_lock:
+        expired = [
+            t for t, d in _import_sessions.items()
+            if now - d.get("created_at", 0) > IMPORT_SESSION_TTL_SECONDS
+        ]
+        for t in expired:
+            _import_sessions.pop(t, None)
+
+
+def store_import_session(raw_rows: List[Dict[str, Any]], headers: List[str]) -> str:
+    """Stores parsed rows securely in memory and returns a short-lived random token."""
+    cleanup_expired_import_sessions()
+    token = secrets.token_hex(16)
+    with _import_sessions_lock:
+        _import_sessions[token] = {
+            "created_at": time.time(),
+            "headers": headers,
+            "raw_rows": raw_rows,
+        }
+    return token
+
+
+def get_import_session(token: str) -> Optional[Dict[str, Any]]:
+    """Retrieves session without deleting it."""
+    cleanup_expired_import_sessions()
+    with _import_sessions_lock:
+        sess = _import_sessions.get(token)
+        if sess and (time.time() - sess.get("created_at", 0) <= IMPORT_SESSION_TTL_SECONDS):
+            return sess
+    return None
+
+
+def pop_import_session(token: str) -> Optional[Dict[str, Any]]:
+    """Retrieves session and deletes it immediately (one-time token consumption)."""
+    cleanup_expired_import_sessions()
+    with _import_sessions_lock:
+        sess = _import_sessions.pop(token, None)
+        if sess and (time.time() - sess.get("created_at", 0) <= IMPORT_SESSION_TTL_SECONDS):
+            return sess
+    return None
+
 
 EXCEL_COLUMNS = [
     ("Account ID", "id", 12),
@@ -86,6 +144,8 @@ def export_accounts_to_excel(accounts: Optional[List[Dict[str, Any]]] = None) ->
     for row_idx, acc in enumerate(accounts, start=2):
         for col_idx, (_, field_key, _) in enumerate(EXCEL_COLUMNS, start=1):
             raw_val = acc.get(field_key)
+            if field_key == "proxy_endpoint" and raw_val:
+                raw_val = vault.redact_proxy_url(raw_val)
             safe_val = neutralize_formula(raw_val)
             cell = ws.cell(row=row_idx, column=col_idx, value=safe_val)
             cell.font = Font(name="Calibri", size=10)
@@ -313,3 +373,390 @@ def execute_import(to_create: List[Dict[str, Any]], to_update: List[Dict[str, An
             pass
 
     return {"created": created_count, "updated": updated_count}
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Column Mapping & Universal File Parsing (XLSX, CSV, TSV)
+# ---------------------------------------------------------------------------
+TOOL_DATA_POINTS = [
+    {
+        "key": "username",
+        "label": "Username",
+        "required": True,
+        "storage": "Local Database (Metadata)",
+        "description": "Instagram username / handle",
+        "synonyms": ["user", "username", "login", "handle", "account", "ig_user", "profile"]
+    },
+    {
+        "key": "password",
+        "label": "Password",
+        "required": False,
+        "storage": "Protected Vault (Windows DPAPI Encrypted)",
+        "description": "Account password (Stored securely, never plaintext)",
+        "synonyms": ["password", "pass", "pwd", "credential", "auth_pass"]
+    },
+    {
+        "key": "totp_seed",
+        "label": "2FA Key / TOTP Seed",
+        "required": False,
+        "storage": "Protected Vault (Windows DPAPI Encrypted)",
+        "description": "Authenticator secret key for 6-digit TOTP codes",
+        "synonyms": ["2fa", "2fa_key", "totp", "secret", "2fa_secret", "authenticator", "seed", "otp_key"]
+    },
+    {
+        "key": "tag",
+        "label": "Tool Tag / Niche",
+        "required": False,
+        "storage": "Local Database (Metadata)",
+        "description": "Category or label (e.g. Meme, Fashion, Client A, Farm 1)",
+        "synonyms": ["tag", "tags", "label", "category", "niche", "group", "campaign", "folder"]
+    },
+    {
+        "key": "notes",
+        "label": "Notes",
+        "required": False,
+        "storage": "Local Database (Metadata)",
+        "description": "Custom comments or warm-up notes",
+        "synonyms": ["note", "notes", "comment", "comments", "description", "info", "memo"]
+    },
+    {
+        "key": "proxy_endpoint",
+        "label": "Proxy Endpoint",
+        "required": False,
+        "storage": "Local Database (Metadata)",
+        "description": "Proxy IP:Port or http://user:pass@host:port",
+        "synonyms": ["proxy", "proxy_endpoint", "proxy_ip", "ip", "endpoint", "server"]
+    },
+    {
+        "key": "device_serial",
+        "label": "Device Serial",
+        "required": False,
+        "storage": "Local Database (Metadata)",
+        "description": "Bound Android phone serial (or use current device)",
+        "synonyms": ["device", "device_serial", "serial", "phone", "udid"]
+    },
+    {
+        "key": "package_name",
+        "label": "Package Name",
+        "required": False,
+        "storage": "Local Database (Metadata)",
+        "description": "Instagram or Clone package name (default com.instagram.android)",
+        "synonyms": ["package", "package_name", "pkg", "clone", "app", "target_package"]
+    },
+]
+
+
+def suggest_auto_mapping(headers: List[str]) -> Dict[str, Optional[str]]:
+    """Suggests best column matching for each tool data point based on header synonyms."""
+    mapping = {}
+    normalized_headers = [(h, h.strip().lower().replace("_", "").replace(" ", "").replace("-", "")) for h in headers]
+
+    for dp in TOOL_DATA_POINTS:
+        key = dp["key"]
+        matched_header = None
+        for syn in dp["synonyms"]:
+            norm_syn = syn.replace("_", "").replace(" ", "").replace("-", "")
+            for orig_h, norm_h in normalized_headers:
+                if norm_syn == norm_h or norm_syn in norm_h:
+                    matched_header = orig_h
+                    break
+            if matched_header:
+                break
+        mapping[key] = matched_header
+
+    return mapping
+
+
+def parse_file_headers_and_rows(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """
+    Parses an uploaded .xlsx or .csv/.tsv file and returns:
+    - Detected column headers
+    - First 5 sample rows for preview with secrets redacted
+    - Ephemeral import_token referencing server-side cached rows (no secrets returned)
+    - Suggested auto-mapping based on column names
+    """
+    fn_lower = filename.lower()
+    headers = []
+    raw_rows = []
+
+    if fn_lower.endswith(".xls"):
+        return {
+            "success": False,
+            "error": "Legacy .xls format is not supported. Please save your spreadsheet as modern Excel (.xlsx) or CSV (.csv)."
+        }
+
+    if fn_lower.endswith(".xlsx"):
+        try:
+            wb = openpyxl.load_workbook(filename=io.BytesIO(file_bytes), data_only=True)
+            ws = wb.active
+            if ws.max_column == 0 or ws.max_row == 0:
+                return {"success": False, "error": "Empty spreadsheet or missing header row."}
+
+            max_col = ws.max_column
+            max_row = ws.max_row
+
+            # Determine which columns have actual non-empty data in rows 2..max_row
+            cols_with_data = set()
+            for r in range(2, max_row + 1):
+                for c in range(1, max_col + 1):
+                    val = ws.cell(row=r, column=c).value
+                    if val is not None and str(val).strip() != "":
+                        cols_with_data.add(c)
+
+            # Read headers while preserving column positions and rejecting invalid headers
+            headers = []
+            col_indices = []
+            seen_headers = {}
+
+            for c in range(1, max_col + 1):
+                h_val = ws.cell(row=1, column=c).value
+                h_str = str(h_val).strip() if h_val is not None else ""
+
+                if not h_str:
+                    if c in cols_with_data:
+                        return {
+                            "success": False,
+                            "error": f"Column {c} contains data but is missing a header name. All data columns must have valid headers."
+                        }
+                    # Empty column with no header and no data -> omit without shifting column positions
+                    continue
+
+                h_lower = h_str.lower()
+                if h_lower in seen_headers:
+                    return {
+                        "success": False,
+                        "error": f"Duplicate column header '{h_str}' found at column {c} (previously seen at column {seen_headers[h_lower]})."
+                    }
+                seen_headers[h_lower] = c
+                headers.append(h_str)
+                col_indices.append(c)
+
+            if not headers:
+                return {"success": False, "error": "No header columns found in file."}
+
+            for row_idx in range(2, max_row + 1):
+                row_vals = [ws.cell(row=row_idx, column=c).value for c in col_indices]
+                if all(v is None or str(v).strip() == "" for v in row_vals):
+                    continue
+                row_dict = {}
+                for col_name, val in zip(headers, row_vals):
+                    row_dict[col_name] = sanitize_input(val)
+                raw_rows.append(row_dict)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to parse Excel file: {e}"}
+
+    elif fn_lower.endswith((".csv", ".tsv", ".txt")):
+        try:
+            content_str = None
+            for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+                try:
+                    content_str = file_bytes.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+
+            if not content_str:
+                return {"success": False, "error": "Unable to decode text file. Ensure UTF-8 encoding."}
+
+            first_line = content_str.splitlines()[0] if content_str.splitlines() else ""
+            delim = ","
+            if "\t" in first_line:
+                delim = "\t"
+            elif ";" in first_line and first_line.count(";") > first_line.count(","):
+                delim = ";"
+            elif "|" in first_line and first_line.count("|") > first_line.count(","):
+                delim = "|"
+
+            csv_reader = csv.reader(io.StringIO(content_str), delimiter=delim)
+            all_lines = list(csv_reader)
+            if not all_lines:
+                return {"success": False, "error": "Empty spreadsheet or missing header row."}
+
+            raw_header_cells = all_lines[0]
+            # Identify columns with data in rows 1..N
+            cols_with_data = set()
+            for row in all_lines[1:]:
+                for c_idx, cell_val in enumerate(row):
+                    if cell_val is not None and str(cell_val).strip() != "":
+                        cols_with_data.add(c_idx)
+
+            headers = []
+            col_indices = []
+            seen_headers = {}
+
+            for c_idx, h_val in enumerate(raw_header_cells):
+                h_str = str(h_val).strip() if h_val is not None else ""
+                if not h_str:
+                    if c_idx in cols_with_data:
+                        return {
+                            "success": False,
+                            "error": f"Column {c_idx + 1} contains data but is missing a header name. All data columns must have valid headers."
+                        }
+                    continue
+
+                h_lower = h_str.lower()
+                if h_lower in seen_headers:
+                    return {
+                        "success": False,
+                        "error": f"Duplicate column header '{h_str}' found at column {c_idx + 1} (previously seen at column {seen_headers[h_lower]})."
+                    }
+                seen_headers[h_lower] = c_idx + 1
+                headers.append(h_str)
+                col_indices.append(c_idx)
+
+            if not headers:
+                return {"success": False, "error": "No header columns found in file."}
+
+            for row in all_lines[1:]:
+                row_vals = [row[c_idx] if c_idx < len(row) else None for c_idx in col_indices]
+                if all(v is None or str(v).strip() == "" for v in row_vals):
+                    continue
+                clean_row = {}
+                for col_name, val in zip(headers, row_vals):
+                    clean_row[col_name] = sanitize_input(val)
+                raw_rows.append(clean_row)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to parse CSV file: {e}"}
+    else:
+        return {"success": False, "error": "Unsupported file format. Please upload .xlsx, .csv, or .tsv"}
+
+    if not headers:
+        return {"success": False, "error": "No header columns found in file."}
+
+    auto_mapping = suggest_auto_mapping(headers)
+
+    # Cache parsed rows in server-side ephemeral session and generate secure token
+    import_token = store_import_session(raw_rows, headers)
+
+    # Redact sensitive preview data (never send raw passwords, TOTP seeds, or proxy credentials to browser)
+    sensitive_cols = set()
+    for k in ("password", "totp_seed"):
+        if auto_mapping.get(k):
+            sensitive_cols.add(auto_mapping[k])
+    for h in headers:
+        h_low = h.lower()
+        if any(s in h_low for s in ("password", "pass", "pwd", "totp", "secret", "2fa", "seed")):
+            sensitive_cols.add(h)
+
+    proxy_cols = set()
+    if auto_mapping.get("proxy_endpoint"):
+        proxy_cols.add(auto_mapping["proxy_endpoint"])
+    for h in headers:
+        if "proxy" in h.lower():
+            proxy_cols.add(h)
+
+    redacted_samples = []
+    for r in raw_rows[:5]:
+        red_r = {}
+        for k, v in r.items():
+            if k in sensitive_cols and v:
+                red_r[k] = "••••••••"
+            elif k in proxy_cols and v:
+                red_r[k] = vault.redact_proxy_url(v)
+            else:
+                red_r[k] = v
+        redacted_samples.append(red_r)
+
+    return {
+        "success": True,
+        "import_token": import_token,
+        "filename": filename,
+        "headers": headers,
+        "total_rows": len(raw_rows),
+        "sample_rows": redacted_samples,
+        "auto_mapping": auto_mapping,
+        "tool_data_points": TOOL_DATA_POINTS,
+    }
+
+
+def import_accounts_with_mapping(
+    raw_rows: List[Dict[str, Any]],
+    column_mapping: Dict[str, Optional[str]],
+    default_device: Optional[str] = None,
+    default_package: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Imports accounts according to the user's custom column mapping.
+    Stores metadata in database (data/instoper.db) and credentials in DPAPI vault.
+    """
+    user_col = column_mapping.get("username")
+    if not user_col:
+        return {"success": False, "error": "Username column must be mapped."}
+
+    pwd_col = column_mapping.get("password")
+    totp_col = column_mapping.get("totp_seed")
+    tag_col = column_mapping.get("tag")
+    notes_col = column_mapping.get("notes")
+    proxy_col = column_mapping.get("proxy_endpoint")
+    dev_col = column_mapping.get("device_serial")
+    pkg_col = column_mapping.get("package_name")
+
+    created_count = 0
+    updated_count = 0
+    errors = []
+
+    for idx, row in enumerate(raw_rows, start=1):
+        username = row.get(user_col)
+        if not username:
+            errors.append(f"Row {idx}: Username is empty, skipped.")
+            continue
+
+        username = str(username).strip()
+        password = str(row.get(pwd_col)).strip() if pwd_col and row.get(pwd_col) else None
+        totp_seed = str(row.get(totp_col)).strip() if totp_col and row.get(totp_col) else None
+        tag = str(row.get(tag_col)).strip() if tag_col and row.get(tag_col) else None
+        notes = str(row.get(notes_col)).strip() if notes_col and row.get(notes_col) else None
+        proxy = str(row.get(proxy_col)).strip() if proxy_col and row.get(proxy_col) else None
+
+        device_serial = (str(row.get(dev_col)).strip() if dev_col and row.get(dev_col) else None) or default_device
+        package_name = (str(row.get(pkg_col)).strip() if pkg_col and row.get(pkg_col) else None) or default_package or "com.instagram.android"
+
+        # Check if account already exists
+        existing = db.get_account_by_username(username, db_path=db_path)
+        if existing:
+            try:
+                db.update_account(
+                    account_id=existing["id"],
+                    username=username,
+                    device_serial=device_serial,
+                    package_name=package_name,
+                    proxy_endpoint=proxy,
+                    tag=tag,
+                    notes=notes,
+                    db_path=db_path,
+                )
+                if password or totp_seed:
+                    db.save_account_secrets(
+                        account_id=existing["id"],
+                        password=password,
+                        totp_seed=totp_seed,
+                        db_path=db_path,
+                    )
+                updated_count += 1
+            except Exception as e:
+                errors.append(f"Row {idx} ({username}): Update failed - {e}")
+        else:
+            try:
+                acc_id = db.create_account(
+                    username=username,
+                    device_serial=device_serial,
+                    package_name=package_name,
+                    proxy_endpoint=proxy,
+                    tag=tag,
+                    notes=notes,
+                    password=password,
+                    totp_seed=totp_seed,
+                    db_path=db_path,
+                )
+                created_count += 1
+            except Exception as e:
+                errors.append(f"Row {idx} ({username}): Create failed - {e}")
+
+    return {
+        "success": True,
+        "created": created_count,
+        "updated": updated_count,
+        "total_processed": len(raw_rows),
+        "errors": errors,
+    }

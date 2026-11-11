@@ -4,6 +4,7 @@ import time
 import json
 import queue
 import io
+import tempfile
 import threading
 import webbrowser
 from flask import Flask, render_template, request, Response, jsonify, send_from_directory
@@ -338,6 +339,7 @@ def create_account_api():
             package_name=data.get("package_name"),
             proxy_endpoint=data.get("proxy_endpoint"),
             proxy_label=data.get("proxy_label"),
+            tag=data.get("tag"),
             notes=data.get("notes"),
             status=data.get("status", "active"),
             password=data.get("password"),
@@ -371,6 +373,7 @@ def update_account_api(acc_id):
             package_name=data.get("package_name"),
             proxy_endpoint=data.get("proxy_endpoint"),
             proxy_label=data.get("proxy_label"),
+            tag=data.get("tag"),
             notes=data.get("notes"),
             status=data.get("status"),
             login_status=data.get("login_status"),
@@ -441,6 +444,69 @@ def scan_clones_api():
         return jsonify({"error": f"Scan failed: {e}"}), 500
 
 
+MAX_APK_SIZE = 250 * 1024 * 1024  # 250 MB max APK size
+
+
+@app.route("/api/clones/install-apk", methods=["POST"])
+def install_apk_api():
+    """
+    Accepts an operator-provided .apk file from the PC, validates extension and size,
+    installs it onto the target device via ADB, immediately rescans package inventory,
+    and guarantees cleanup of temporary files.
+    """
+    if "apk_file" not in request.files:
+        return jsonify({"error": "No APK file uploaded."}), 400
+
+    file = request.files["apk_file"]
+    device_serial = request.form.get("device_serial") or None
+
+    if not file.filename:
+        return jsonify({"error": "No file selected."}), 400
+
+    fn_lower = file.filename.lower()
+    if not fn_lower.endswith(".apk"):
+        return jsonify({"error": "Invalid file format. Only .apk files are supported."}), 400
+
+    temp_dir = os.path.join(UPLOAD_FOLDER, "temp_apk")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".apk", dir=temp_dir)
+    os.close(temp_fd)
+
+    try:
+        size = 0
+        with open(temp_path, "wb") as f:
+            while chunk := file.read(65536):
+                size += len(chunk)
+                if size > MAX_APK_SIZE:
+                    return jsonify({"error": f"APK file exceeds maximum allowed size of {MAX_APK_SIZE // (1024*1024)}MB."}), 400
+                f.write(chunk)
+
+        install_res = package_scanner.install_apk_on_device(temp_path, device_serial=device_serial)
+
+        candidates = []
+        if install_res.get("success"):
+            target_serial = install_res.get("device_serial") or device_serial
+            candidates = package_scanner.scan_packages(device_serial=target_serial)
+
+        status_code = 200 if install_res.get("success") else 400
+        return jsonify({
+            "success": bool(install_res.get("success")),
+            "status": install_res.get("status"),
+            "message": install_res.get("message"),
+            "device_serial": install_res.get("device_serial"),
+            "package_name": install_res.get("new_package"),
+            "result": install_res,
+            "candidates": candidates,
+        }), status_code
+
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
 @app.route("/api/clones/<int:clone_id>/confirm", methods=["POST"])
 def confirm_clone_api(clone_id):
     data = request.json or {}
@@ -502,6 +568,60 @@ def execute_excel_import():
     to_update = data.get("to_update", [])
     result = excel_manager.execute_import(to_create, to_update)
     return jsonify({"status": "ok", "result": result})
+
+
+@app.route("/api/accounts/parse-file", methods=["POST"])
+def parse_account_file_api():
+    """
+    Parses any uploaded spreadsheet (XLSX, CSV, TSV) and returns headers,
+    sample rows, and auto-detected column mappings.
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": "No file selected."}), 400
+
+    content = file.read()
+    result = excel_manager.parse_file_headers_and_rows(content, file.filename)
+    if not result.get("success"):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route("/api/accounts/import-mapped", methods=["POST"])
+def import_mapped_accounts_api():
+    """
+    Imports accounts according to the user's custom column mapping.
+    Retrieves rows via ephemeral server-side import_token (or raw_rows for direct API calls).
+    Saves metadata to database and securely encrypts credentials via DPAPI.
+    """
+    data = request.json or {}
+    import_token = data.get("import_token")
+    raw_rows = data.get("raw_rows")
+    mapping = data.get("mapping", {})
+    default_device = data.get("default_device")
+    default_package = data.get("default_package")
+
+    if import_token:
+        session = excel_manager.pop_import_session(import_token)
+        if not session:
+            return jsonify({"error": "Import session has expired or is invalid. Please re-upload your spreadsheet."}), 400
+        raw_rows = session.get("raw_rows", [])
+
+    if not raw_rows:
+        return jsonify({"error": "No data rows to import."}), 400
+    if not mapping.get("username"):
+        return jsonify({"error": "Username column must be mapped."}), 400
+
+    result = excel_manager.import_accounts_with_mapping(
+        raw_rows=raw_rows,
+        column_mapping=mapping,
+        default_device=default_device,
+        default_package=default_package,
+    )
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------

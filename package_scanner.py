@@ -4,9 +4,10 @@ Discovers installed Instagram packages and clone candidates on Android devices,
 tracks operator confirmation status, and verifies package availability.
 """
 
+import os
 import re
 import subprocess
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 import db
 
@@ -29,6 +30,19 @@ CLONE_KEYWORDS = [
     "superclone",
     "2face",
 ]
+
+
+class InstallResultStatus:
+    SUCCESS = "success"
+    ALREADY_EXISTS = "already_exists"
+    SIGNATURE_MISMATCH = "signature_mismatch"
+    DOWNGRADE_ERROR = "downgrade_error"
+    STORAGE_ERROR = "insufficient_storage"
+    INVALID_APK = "invalid_apk"
+    CONFIRMATION_REQUIRED = "confirmation_required"
+    DEVICE_OFFLINE = "device_offline"
+    ERROR = "error"
+
 
 
 def run_adb_command(cmd: List[str], device_serial: Optional[str] = None, timeout: int = 8) -> str:
@@ -87,12 +101,175 @@ def is_package_installed(package_name: str, device_serial: Optional[str] = None)
     return "package:" in output
 
 
-def scan_packages(device_serial: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_third_party_packages(device_serial: Optional[str] = None) -> Set[str]:
+    """Helper to query current third-party packages installed on the target device."""
+    output = run_adb_command(["shell", "pm", "list", "packages", "-3"], device_serial=device_serial)
+    pkgs = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("package:"):
+            pkgs.add(line.replace("package:", "").strip())
+    return pkgs
+
+
+def install_apk_on_device(
+    apk_path: str,
+    device_serial: Optional[str] = None,
+    timeout: int = 90
+) -> Dict[str, Any]:
+    """
+    Installs an operator-provided APK onto the target Android device via ADB.
+    Resolves the target serial once, tracks before/after installed packages,
+    and returns structured outcomes for success, offline device, storage error,
+    signature mismatch, version downgrade, or device confirmation prompt.
+    """
+    if not os.path.exists(apk_path):
+        return {
+            "success": False,
+            "status": InstallResultStatus.INVALID_APK,
+            "message": f"APK file not found at path: {apk_path}",
+            "device_serial": device_serial,
+            "new_package": None,
+        }
+
+    # Resolve target device serial once
+    serial = device_serial
+    if not serial:
+        devices = list_connected_devices()
+        if devices:
+            serial = devices[0]["serial"]
+        else:
+            return {
+                "success": False,
+                "status": InstallResultStatus.DEVICE_OFFLINE,
+                "message": "No connected ADB devices found.",
+                "device_serial": None,
+                "new_package": None,
+            }
+
+    # Snapshot third-party packages before install to pinpoint newly installed package
+    pkgs_before = get_third_party_packages(device_serial=serial)
+
+    # Execute ADB install (-r allows reinstalling/updating existing package)
+    cmd = ["adb"]
+    if serial:
+        cmd.extend(["-s", serial])
+    cmd.extend(["install", "-r", apk_path])
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False
+        )
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        output = f"{stdout}\n{stderr}".strip()
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "status": InstallResultStatus.CONFIRMATION_REQUIRED,
+            "message": "Installation timed out. Please check if your Android device is prompting 'Install via USB?' or requires on-screen confirmation.",
+            "device_serial": serial,
+            "new_package": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "status": InstallResultStatus.ERROR,
+            "message": f"Failed to execute ADB install: {e}",
+            "device_serial": serial,
+            "new_package": None,
+        }
+
+    # Analyze ADB output
+    out_lower = output.lower()
+    if "success" in out_lower:
+        # Detect newly installed package
+        pkgs_after = get_third_party_packages(device_serial=serial)
+        diff = pkgs_after - pkgs_before
+        new_pkg = sorted(diff)[0] if diff else None
+
+        return {
+            "success": True,
+            "status": InstallResultStatus.SUCCESS,
+            "message": f"APK successfully installed on device '{serial}'.",
+            "device_serial": serial,
+            "new_package": new_pkg,
+            "raw_output": output,
+        }
+
+    # Error classification
+    if "install_failed_update_incompatible" in out_lower or "signatures do not match" in out_lower:
+        return {
+            "success": False,
+            "status": InstallResultStatus.SIGNATURE_MISMATCH,
+            "message": "Signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE). The device already has this package installed with a different signature key.",
+            "device_serial": serial,
+            "new_package": None,
+            "raw_output": output,
+        }
+
+    if "install_failed_version_downgrade" in out_lower:
+        return {
+            "success": False,
+            "status": InstallResultStatus.DOWNGRADE_ERROR,
+            "message": "Version downgrade rejected (INSTALL_FAILED_VERSION_DOWNGRADE). A higher version of this app is already installed.",
+            "device_serial": serial,
+            "new_package": None,
+            "raw_output": output,
+        }
+
+    if "install_failed_insufficient_storage" in out_lower:
+        return {
+            "success": False,
+            "status": InstallResultStatus.STORAGE_ERROR,
+            "message": "Device storage full (INSTALL_FAILED_INSUFFICIENT_STORAGE). Free up space on device.",
+            "device_serial": serial,
+            "new_package": None,
+            "raw_output": output,
+        }
+
+    if "user_restricted" in out_lower or "canceled_by_user" in out_lower or "blocked" in out_lower:
+        return {
+            "success": False,
+            "status": InstallResultStatus.CONFIRMATION_REQUIRED,
+            "message": "Installation blocked by user or device security settings. Please allow 'Install via USB' in Developer Options on device.",
+            "device_serial": serial,
+            "new_package": None,
+            "raw_output": output,
+        }
+
+    if "device offline" in out_lower or "device not found" in out_lower or "no devices/emulators found" in out_lower:
+        return {
+            "success": False,
+            "status": InstallResultStatus.DEVICE_OFFLINE,
+            "message": f"Device '{serial}' went offline or was disconnected.",
+            "device_serial": serial,
+            "new_package": None,
+            "raw_output": output,
+        }
+
+    return {
+        "success": False,
+        "status": InstallResultStatus.ERROR,
+        "message": f"Installation failed: {output}",
+        "device_serial": serial,
+        "new_package": None,
+        "raw_output": output,
+    }
+
+
+def scan_packages(device_serial: Optional[str] = None, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Scans device for all third-party and clone-candidate packages.
+    Resolves the target device serial once and ensures the exact same serial is
+    passed to every ADB command and database write.
     Persists newly discovered packages into the database inventory and returns candidates.
     """
-    # If no serial provided, pick first connected device if available
+    # Resolve serial once upfront
     serial = device_serial
     if not serial:
         devices = list_connected_devices()
@@ -101,8 +278,8 @@ def scan_packages(device_serial: Optional[str] = None) -> List[Dict[str, Any]]:
         else:
             serial = "default_device"
 
-    # Query third-party packages and all packages matching clone patterns
-    raw_output = run_adb_command(["shell", "pm", "list", "packages", "-3"], device_serial=device_serial)
+    # Query third-party packages and all packages matching clone patterns targeting the resolved serial
+    raw_output = run_adb_command(["shell", "pm", "list", "packages", "-3"], device_serial=serial)
     all_packages = set()
 
     for line in raw_output.splitlines():
@@ -110,8 +287,8 @@ def scan_packages(device_serial: Optional[str] = None) -> List[Dict[str, Any]]:
         if line.startswith("package:"):
             all_packages.add(line.replace("package:", "").strip())
 
-    # Also query specifically for instagram packages across all users/spaces
-    insta_output = run_adb_command(["shell", "pm", "list", "packages", "instagram"], device_serial=device_serial)
+    # Also query specifically for instagram packages across all users/spaces on the resolved serial
+    insta_output = run_adb_command(["shell", "pm", "list", "packages", "instagram"], device_serial=serial)
     for line in insta_output.splitlines():
         if line.startswith("package:"):
             all_packages.add(line.replace("package:", "").strip())
@@ -119,10 +296,10 @@ def scan_packages(device_serial: Optional[str] = None) -> List[Dict[str, Any]]:
     # Always ensure official package is evaluated
     all_packages.add(OFFICIAL_INSTAGRAM_PKG)
 
-    foreground_pkg = get_foreground_package(device_serial=device_serial)
+    foreground_pkg = get_foreground_package(device_serial=serial)
 
-    # Load existing clones from DB to preserve confirmation state
-    existing_clones = {c["package_name"]: c for c in db.get_clones(device_serial=serial)}
+    # Load existing clones from DB to preserve confirmation state for THIS device serial
+    existing_clones = {c["package_name"]: c for c in db.get_clones(device_serial=serial, db_path=db_path)}
 
     candidates = []
 
@@ -169,7 +346,8 @@ def scan_packages(device_serial: Optional[str] = None) -> List[Dict[str, Any]]:
                 device_serial=serial,
                 package_name=pkg,
                 app_name=app_name,
-                is_confirmed=is_confirmed
+                is_confirmed=is_confirmed,
+                db_path=db_path,
             )
 
         candidates.append({

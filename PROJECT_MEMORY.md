@@ -148,3 +148,82 @@
   - `templates/index.html`: Added Tab Switcher (Reel Studio vs Accounts & Clones) and created a comprehensive dashboard with accounts table, clone inventory, batch login monitor, and modals for account editing, Excel preview, and secret vaulting.
   - `tests/test_full_suite.py`: Created 8 comprehensive automated unit/integration tests validating all success criteria.
 - **Verification & Outcome**: Ran test suite (`python -m unittest tests/test_full_suite.py`) with 8 tests passing in 0.286s with 100% success. Verified server routes and UI integrity.
+
+---
+
+### [2026-11-08 20:31:00] Data Point Definition, Universal File Importer, & Interactive Column Matcher
+- **User Request**: "bro make sure when user add account credension so defilne which data point you need and when user uplode that file where it save after uplode you make give user a screen where thye can Lable data point according our tools need... Username , Password , 2fa key our tool tag , note..."
+- **Context & Problem**: Operators upload spreadsheets from different sources/vendors with non-standard column headers (e.g. `Account`, `Pass`, `2FA Secret`, `Niche Tag`). They need clear visibility into which data points are required, where they are saved, and an interactive UI to label/match columns with a live preview before importing.
+- **Action Taken & Changes**:
+  - `db.py`: Added `tag` column to `accounts` schema and CRUD methods with auto-migration (`PRAGMA table_info`).
+  - `excel_manager.py`:
+    - Defined `TOOL_DATA_POINTS` (Username, Password, 2FA Key, Tool Tag/Niche, Notes, Proxy Endpoint, Device Serial, Package Name) with explicit storage classification (Database vs DPAPI Vault).
+    - Built `parse_file_headers_and_rows()` supporting XLSX, CSV, TSV with automated delimiter and encoding detection.
+    - Added `suggest_auto_mapping()` with synonym heuristics matching vendor variations.
+    - Built `import_accounts_with_mapping()` supporting custom column bindings, metadata persistence, and DPAPI vault credential encryption.
+  - `app.py`: Added `/api/accounts/parse-file` and `/api/accounts/import-mapped` endpoints. Updated single account CRUD for tags.
+  - `templates/index.html`:
+    - Transformed import modal into a 2-step **Universal File Import & Column Matcher** with clear data storage badges (Database vs DPAPI Vault), dynamic dropdowns, and a live 3-row preview table.
+    - Updated Single Account Modal with Tool Tag/Niche field and storage labels.
+    - Updated Accounts Table with tag badges.
+  - `tests/test_full_suite.py`: Added `test_universal_file_parsing_and_column_matcher` test case (9/9 passed).
+- **Verification & Outcome**: Ran test suite (`9 passed in 0.343s`). Tested CSV import with custom columns (`Account`, `Pass`, `2FA Secret`, `Niche Tag`). DPAPI encryption and database metadata verified.
+
+
+### [2026-11-08 21:05:00] Seven Surgical Priority Fixes: Security, Session Verification & Concurrency
+- **User Request**: "Review the current implementation against the findings below. Fix these issues surgically; preserve the existing Reel workflow and UI conventions. Do not refactor unrelated code or add speculative features. Priority fixes: 1. Prevent spreadsheet-driven XSS; 2. Keep imported secrets out of the browser; 3. Protect proxy credentials; 4. Verify the logged-in username before marking an account successful; 5. Make batch stop/start safe; 6. Fix clone scan device targeting; 7. Fix spreadsheet parsing edge cases."
+- **Context & Problem**: 
+  - Spreadsheet cells and database values were previously interpolated directly into HTML strings (`innerHTML`), posing XSS risks.
+  - The parse-file API returned raw parsed rows to the client browser, exposing passwords and TOTP seeds in client memory/network traffic.
+  - Proxy URLs with embedded credentials (`user:pass@host:port`) were not separating credentials into DPAPI storage, risking exposure in APIs and standard Excel exports.
+  - An Instagram account was previously marked successful based solely on feed/profile visibility without verifying that the displayed username matched the requested account.
+  - Batch stop/start lacked thread transition locking and did not prevent worker overlap when stop was followed immediately by start.
+  - Package scanner resolved device serial but passed `device_serial=None` to internal ADB commands, causing command drift in multi-device environments.
+  - Spreadsheet parsing dropped empty header columns, corrupting subsequent column alignment; duplicate headers were not rejected; and `.xls` files caused openpyxl runtime errors.
+- **Action Taken & Changes**:
+  - `excel_manager.py`:
+    - Added in-memory ephemeral import session store (`_import_sessions`, `_import_sessions_lock`, 15-minute TTL) generating single-use `import_token`.
+    - Removed `raw_rows` from `parse_file_headers_and_rows` return payload. Masked sensitive preview data (`••••••••` for passwords/seeds, redacted proxy URLs).
+    - Explicitly rejected legacy `.xls` format with a clear error prompt.
+    - Preserved 1-based column indices when headers are blank; rejected blank headers that contain data in subsequent rows; rejected duplicate headers.
+  - `app.py`:
+    - Updated `/api/accounts/import-mapped` to accept `import_token` and pop the session from `excel_manager`.
+  - `vault.py`:
+    - Updated `redact_proxy_url` to completely redact embedded credentials (`username` and `password`) as `http://***:***@host:port`.
+  - `package_scanner.py`:
+    - Resolved `serial` upfront once and routed that exact serial to every ADB call (`pm list packages -3`, `pm list packages instagram`, `dumpsys window`) and database write (`db.upsert_clone`). Added `db_path` parameter support.
+  - `login_flow.py`:
+    - Implemented `verify_session_identity(package_name, expected_username) -> bool` to inspect action bar titles and profile handle before granting login success.
+    - Updated `login_account` and `_solve_totp_challenge` to require identity confirmation; marks account as `needs_action` if session identity is unconfirmed.
+    - Upgraded `BatchLoginManager` with `threading.Lock()` across all state transitions. Implemented `"stopping"` state, guarded against worker thread overlap, and cleanly finalized state in `try...finally`. Added `db_path` support.
+  - `templates/index.html`:
+    - Upgraded `escapeHtml` to safely handle null, undefined, and special characters (`&`, `<`, `>`, `"`, `'`).
+    - Escaped all user and database values in accounts table, clone list, modal titles, live preview, and error banners.
+    - Updated upload and commit workflow to pass `import_token`.
+  - `tests/test_full_suite.py`:
+    - Added comprehensive regression tests for all 7 fixes: XSS/formula neutralization, server token isolation, proxy credential protection, session identity verification, batch stop/start overlap prevention, multi-device clone targeting isolation, spreadsheet edge cases, and official RFC 6238 published test vectors.
+- **Technical Mechanism**: Ephemeral backend sessions prevent secret exposure to browser DOM/memory; DPAPI encrypts proxy secrets while storing clean endpoint metadata in relational tables; UI Automator hierarchy analysis checks screen text against target account handles; thread locks enforce mutual exclusion on worker lifecycle transitions.
+- **Verification & Outcome**: Ran full test suite (`python -m unittest tests/test_full_suite.py`): all 13 tests passed in 0.536s. Verified clone package scanner on physical device `0624531123033570`. Re-launched Flask app on port 5000. Existing Reel workflow package default (`com.instagram.android`) preserved.
+
+
+### [2026-11-08 21:50:00] Clone APK Installation Pipeline, Auto-Detection & Account Binding
+- **User Request**: "follow the instruction C:\Users\Lovekush Gola\.agents\skills\deep-plan\scripts\validate_plan.py' 'plan/2026-11-08_install-and-manage-instagram-clone-apps.md"
+- **Context & Problem**: Operators needed the ability to install custom Instagram clone APKs (e.g. from App Cloner, Dual Space, or custom packages) directly from the PC to connected Android devices via ADB, auto-detect the newly installed package ID, display the clones in the inventory, and bind specific Instagram accounts to target devices and package pairs without disrupting the default Reel workflow (`com.instagram.android`).
+- **Action Taken & Changes**:
+  - `package_scanner.py`:
+    - Implemented `InstallResultStatus` enum defining granular outcomes: `SUCCESS`, `ALREADY_EXISTS`, `SIGNATURE_MISMATCH`, `DOWNGRADE_ERROR`, `STORAGE_ERROR`, `CONFIRMATION_REQUIRED`, `DEVICE_OFFLINE`, `INVALID_APK`, `ERROR`.
+    - Added `get_third_party_packages(device_serial)` to take pre- and post-installation package snapshots.
+    - Implemented `install_apk_on_device(apk_path, device_serial, timeout=90)` executing `adb -s <serial> install -r <apk_path>`, parsing stdout/stderr, classifying error modes, and auto-detecting the new package ID from the package set diff.
+  - `app.py`:
+    - Added `MAX_APK_SIZE = 250 * 1024 * 1024` (250MB limit) and `tempfile.mkstemp` intake under `uploads/temp_apk`.
+    - Implemented `/api/clones/install-apk` route supporting streaming upload, file validation, execution of `install_apk_on_device`, automatic package re-scanning upon success, and guaranteed cleanup of temporary `.apk` files in a `finally` block.
+  - `templates/index.html`:
+    - Added "Install APK" button and modal (`apkInstallModal`) with dropzone, target device selector (`adb -s <serial>`), USB permission notice, and real-time status output.
+    - Added "Assign / Bind" button on clone inventory cards (`openAddAccountWithClone`), opening the account form pre-populated with target package name and device serial.
+    - Populated clone package datalist (`#clonePackagesDatalist`) and devices datalist (`#devicesDatalist`) to provide auto-completion for account bindings.
+    - Integrated the Universal Column Matcher with tokenized session flow and live redacted preview.
+  - `tests/test_full_suite.py`:
+    - Added `test_apk_scanner_installation_modes_and_diff` validating missing file rejection, package diff auto-detection on success, signature mismatch, version downgrade, insufficient storage, and USB confirmation timeout.
+    - Added `test_api_clones_install_apk_endpoint_and_cleanup` validating missing file 400, non-.apk rejection 400, oversized file rejection 400, successful APK installation via test client, and guaranteed temporary file deletion in `uploads/temp_apk`.
+- **Technical Mechanism**: Pre- and post-install set diffing of `pm list packages -3` reliably extracts package identifiers without requiring external binary parsing utilities (e.g. aapt/apktool); temporary files are strictly cleaned up via Python file descriptor management and context teardowns; ADB commands explicitly target resolved device serials to maintain multi-device isolation.
+- **Verification & Outcome**: Ran full test suite (`python -m unittest tests/test_full_suite.py`): all 15 tests passed in 0.966s. Restarted Instoper web server as a background daemon on port 5000. Verified existing Reel workflow defaults remain preserved.

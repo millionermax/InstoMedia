@@ -432,6 +432,9 @@
                 <button onclick="openAccountModal()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white shadow-md transition flex items-center gap-2">
                     <i class="fa-solid fa-user-plus"></i> Add Account
                 </button>
+                <button onclick="openApkInstallModal()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-200 border border-indigo-700/60 transition flex items-center gap-2 shadow-md">
+                    <i class="fa-solid fa-cloud-arrow-up text-indigo-400"></i> Install APK
+                </button>
                 <button onclick="scanClones()" class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-2">
                     <i class="fa-solid fa-radar text-pink-400"></i> Scan Clones
                 </button>
@@ -593,10 +596,15 @@
             <form id="accountForm" onsubmit="handleAccountFormSubmit(event)" class="space-y-4">
                 <input type="hidden" id="formAccountId" value="">
 
-                <div class="grid grid-cols-2 gap-4">
+                <div class="grid grid-cols-3 gap-3">
                     <div class="space-y-1">
                         <label class="text-xs font-semibold text-slate-300">Username *</label>
-                        <input id="formUsername" type="text" required placeholder="my_instagram_username"
+                        <input id="formUsername" type="text" required placeholder="my_username"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-semibold text-slate-300">Tool Tag / Niche</label>
+                        <input id="formTag" type="text" placeholder="Meme, Fashion, Farm"
                                class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
                     </div>
                     <div class="space-y-1">
@@ -609,13 +617,15 @@
                 <div class="grid grid-cols-2 gap-4">
                     <div class="space-y-1">
                         <label class="text-xs font-semibold text-slate-300">Device Serial</label>
-                        <input id="formDeviceSerial" type="text" placeholder="e.g. 0624531123033570"
+                        <input id="formDeviceSerial" list="devicesDatalist" type="text" placeholder="e.g. 0624531123033570"
                                class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                        <datalist id="devicesDatalist"></datalist>
                     </div>
                     <div class="space-y-1">
-                        <label class="text-xs font-semibold text-slate-300">Package Name</label>
-                        <input id="formPackageName" type="text" placeholder="com.instagram.android" value="com.instagram.android"
+                        <label class="text-xs font-semibold text-slate-300">Package / Clone Name</label>
+                        <input id="formPackageName" list="clonePackagesDatalist" type="text" placeholder="com.instagram.android" value="com.instagram.android"
                                class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-pink-500">
+                        <datalist id="clonePackagesDatalist"></datalist>
                     </div>
                 </div>
 
@@ -667,44 +677,167 @@
         </div>
     </div>
 
-    <!-- 2. Excel Import & Preview Modal -->
+    <!-- 2. Universal Column Matcher & Account Import Modal -->
     <div id="excelModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
-        <div class="glass-card max-w-2xl w-full p-6 space-y-5 shadow-2xl border border-slate-700">
+        <div class="glass-card max-w-3xl w-full p-6 space-y-5 shadow-2xl border border-slate-700 max-h-[90vh] overflow-y-auto custom-scroll animate-in fade-in zoom-in duration-200">
             <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-                <h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
-                    <i class="fa-solid fa-file-excel text-emerald-400"></i> Import Metadata from Excel
-                </h3>
+                <div>
+                    <h3 class="font-bold text-base text-slate-100 flex items-center gap-2">
+                        <i class="fa-solid fa-file-csv text-emerald-400"></i> Import Accounts (XLSX, CSV, TSV)
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Universal Column Matcher &bull; Tokenized Session Protection</p>
+                </div>
                 <button onclick="closeExcelModal()" class="text-slate-400 hover:text-white p-1">
                     <i class="fa-solid fa-xmark text-lg"></i>
                 </button>
             </div>
 
-            <!-- Upload Area -->
-            <div id="excelDropzone" onclick="document.getElementById('excelFileInput').click()"
-                 class="border-2 border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl p-6 text-center cursor-pointer bg-slate-900/40 transition">
-                <input type="file" id="excelFileInput" accept=".xlsx" class="hidden" onchange="handleExcelFileSelect(this)">
-                <i class="fa-solid fa-file-arrow-up text-3xl text-emerald-400 mb-2"></i>
-                <p class="text-xs font-semibold text-slate-200">Click to upload or drag & drop .xlsx file</p>
-                <p class="text-[11px] text-slate-400 mt-1">Formula-like cells will be automatically neutralized.</p>
+            <!-- STEP 1: Upload Zone (Visible initially) -->
+            <div id="importStepUpload" class="space-y-3">
+                <div id="excelDropzone" onclick="document.getElementById('excelFileInput').click()"
+                     class="border-2 border-dashed border-slate-700 hover:border-emerald-500/60 rounded-xl p-8 text-center cursor-pointer bg-slate-900/40 hover:bg-slate-900/70 transition space-y-2">
+                    <input type="file" id="excelFileInput" accept=".xlsx,.csv,.tsv,.txt" class="hidden" onchange="handleExcelFileSelect(this)">
+                    <div class="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto text-xl">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                    </div>
+                    <div>
+                        <p class="text-xs font-semibold text-slate-200">Click to browse or drag & drop account file</p>
+                        <p class="text-[10px] text-slate-400 mt-0.5">Accepts Excel (.xlsx), CSV, TSV from any vendor or supplier format</p>
+                    </div>
+                </div>
             </div>
 
-            <!-- Preview Container -->
-            <div id="excelPreviewContainer" class="hidden space-y-3">
-                <div class="flex items-center justify-between text-xs">
-                    <span class="font-semibold text-slate-300">Validation Preview:</span>
-                    <div class="flex gap-2">
-                        <span id="previewToCreate" class="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">0 New</span>
-                        <span id="previewToUpdate" class="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">0 Updates</span>
+            <!-- STEP 2: Universal Column Matcher Screen -->
+            <div id="importStepMapping" class="hidden space-y-4">
+                <div class="p-3 bg-slate-900/70 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <span id="uploadedFileBadge" class="font-mono text-slate-200">feed.csv (0 rows)</span>
+                    </div>
+                    <button type="button" onclick="resetImportStep()" class="text-[11px] text-indigo-400 hover:underline">Choose Different File</button>
+                </div>
+
+                <div class="space-y-2">
+                    <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="fa-solid fa-arrows-split-up-and-left text-pink-400"></i> Label File Columns to Tool Needs
+                    </h4>
+                    <p class="text-[11px] text-slate-400">Match headers from your spreadsheet to Instoper data points. Credentials are encrypted in Windows DPAPI vault.</p>
+                </div>
+
+                <!-- Column Mapping Grid -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[220px] overflow-y-auto custom-scroll pr-1 p-1">
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-pink-300">Username *</span>
+                            <span class="text-[9px] px-1.5 py-0.2 rounded bg-pink-950 text-pink-400 border border-pink-800">Required</span>
+                        </div>
+                        <select id="mapCol_username" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-pink-500" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-amber-500/30 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-amber-300">Password</span>
+                            <span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-950 text-amber-400 border border-amber-800">DPAPI Vault</span>
+                        </div>
+                        <select id="mapCol_password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-amber-500/30 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-amber-300">2FA Key / TOTP Seed</span>
+                            <span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-950 text-amber-400 border border-amber-800">DPAPI Vault</span>
+                        </div>
+                        <select id="mapCol_totp_seed" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-300">Tool Tag / Niche</span>
+                            <span class="text-[9px] text-slate-500">Metadata</span>
+                        </div>
+                        <select id="mapCol_tag" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-300">Notes / Comments</span>
+                            <span class="text-[9px] text-slate-500">Metadata</span>
+                        </div>
+                        <select id="mapCol_notes" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-300">Proxy Endpoint</span>
+                            <span class="text-[9px] text-slate-500">Metadata</span>
+                        </div>
+                        <select id="mapCol_proxy_endpoint" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-300">Device Serial Column</span>
+                            <span class="text-[9px] text-slate-500">Optional</span>
+                        </div>
+                        <select id="mapCol_device_serial" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" onchange="updateLivePreview()"></select>
+                    </div>
+
+                    <div class="p-2.5 rounded-xl bg-slate-900/50 border border-slate-800 space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-300">Package / Clone Name</span>
+                            <span class="text-[9px] text-slate-500">Optional</span>
+                        </div>
+                        <select id="mapCol_package_name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" onchange="updateLivePreview()"></select>
                     </div>
                 </div>
 
-                <!-- Errors list if any -->
-                <div id="excelErrorsList" class="hidden max-h-28 overflow-y-auto p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/50 text-[11px] text-rose-300 space-y-1"></div>
-
-                <div class="flex items-center justify-end space-x-2.5 pt-2">
-                    <button type="button" onclick="closeExcelModal()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white bg-slate-800 transition">Cancel</button>
-                    <button id="excelCommitBtn" onclick="commitExcelImport()" class="px-5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition">Confirm & Import</button>
+                <!-- Defaults Configuration -->
+                <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
+                    <span class="text-[11px] font-bold text-slate-300 uppercase tracking-wider">Fallback Defaults (If column unmapped / empty)</span>
+                    <div class="grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                            <label class="text-[10px] text-slate-400">Default Device Serial</label>
+                            <input id="defaultDeviceSerialInput" type="text" placeholder="Auto-detect connected phone" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-slate-400">Default Package Name</label>
+                            <input id="defaultPackageNameInput" type="text" value="com.instagram.android" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+                        </div>
+                    </div>
                 </div>
+
+                <!-- Live Sample Preview -->
+                <div class="space-y-1.5">
+                    <span class="text-[11px] font-semibold text-slate-300">Live Redacted Preview (First 3 Rows):</span>
+                    <div class="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/60">
+                        <table class="w-full text-left text-[11px]">
+                            <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-800">
+                                <tr>
+                                    <th class="py-1.5 px-2.5">Username</th>
+                                    <th class="py-1.5 px-2.5">Password</th>
+                                    <th class="py-1.5 px-2.5">2FA</th>
+                                    <th class="py-1.5 px-2.5">Tag</th>
+                                    <th class="py-1.5 px-2.5">Proxy</th>
+                                    <th class="py-1.5 px-2.5">Package</th>
+                                </tr>
+                            </thead>
+                            <tbody id="liveMappedPreviewTbody" class="divide-y divide-slate-800/60">
+                                <tr><td colspan="6" class="py-3 text-center text-slate-500">Select file to view preview.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Error Container -->
+                <div id="importErrorsContainer" class="hidden p-3 rounded-xl bg-rose-950/50 border border-rose-800/60 text-rose-300 text-xs"></div>
+            </div>
+
+            <!-- Footer Controls -->
+            <div class="flex items-center justify-end space-x-2.5 pt-2 border-t border-slate-800">
+                <button type="button" onclick="closeExcelModal()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white bg-slate-800 transition">Cancel</button>
+                <button id="commitMappedImportBtn" onclick="executeMappedImport()" class="hidden px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition flex items-center gap-2">
+                    <i class="fa-solid fa-check-double"></i> Confirm & Import Accounts
+                </button>
             </div>
         </div>
     </div>
@@ -759,6 +892,65 @@
                 </div>
                 <button onclick="executeSecretsImport()" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center justify-center gap-2">
                     <i class="fa-solid fa-unlock"></i> Decrypt & Restore Credentials
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. Install Clone APK Modal -->
+    <div id="apkInstallModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass-card max-w-lg w-full p-6 space-y-5 shadow-2xl border border-slate-700 animate-in fade-in zoom-in duration-200">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div>
+                    <h3 class="font-bold text-sm text-slate-100 flex items-center gap-2">
+                        <i class="fa-solid fa-cloud-arrow-up text-indigo-400"></i> Install Instagram Clone APK
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">PC-to-Device APK installation via ADB &bull; Auto-detects package ID</p>
+                </div>
+                <button onclick="closeApkInstallModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- APK File Chooser / Dropzone -->
+            <div id="apkDropzone" onclick="document.getElementById('apkFileInput').click()"
+                 class="border-2 border-dashed border-slate-700 hover:border-indigo-500/60 rounded-xl p-6 text-center cursor-pointer bg-slate-900/40 hover:bg-slate-900/70 transition space-y-2">
+                <input type="file" id="apkFileInput" accept=".apk" class="hidden" onchange="handleApkFileChosen(this)">
+                <div class="w-10 h-10 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto text-lg">
+                    <i class="fa-solid fa-mobile-screen-button"></i>
+                </div>
+                <div>
+                    <p id="apkFileTitle" class="text-xs font-semibold text-slate-200">Click to choose local .apk file from PC</p>
+                    <p id="apkFileSize" class="text-[10px] text-slate-400 mt-0.5">Compatible with AppCloner, DualSpace, ParallelSpace clones (Max 250MB)</p>
+                </div>
+            </div>
+
+            <!-- Target Device Selection -->
+            <div class="space-y-1">
+                <label class="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                    <span>Target Android Device</span>
+                    <span class="text-[10px] text-slate-500 font-mono">adb -s &lt;serial&gt;</span>
+                </label>
+                <select id="apkTargetDevice" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                    <option value="">Auto-Detect Primary Device</option>
+                </select>
+            </div>
+
+            <!-- Safety & Permission Notice -->
+            <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl text-[11px] text-slate-400 space-y-1">
+                <div class="flex items-center gap-1.5 font-semibold text-slate-300">
+                    <i class="fa-solid fa-circle-info text-indigo-400"></i> Operator Note
+                </div>
+                <p>If your phone displays an on-screen dialog asking <em>"Install via USB?"</em>, please tap <strong>Install / Allow</strong> on the phone screen.</p>
+            </div>
+
+            <!-- Status & Result Box -->
+            <div id="apkInstallStatusBox" class="p-3 rounded-xl text-xs space-y-1 hidden"></div>
+
+            <div class="flex items-center justify-end space-x-2.5 pt-2 border-t border-slate-800">
+                <button type="button" onclick="closeApkInstallModal()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white bg-slate-800 transition">Cancel</button>
+                <button id="btnExecuteApkInstall" onclick="executeApkInstall()" class="px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white transition flex items-center gap-2">
+                    <i class="fa-solid fa-play"></i> Install to Device
                 </button>
             </div>
         </div>
@@ -979,7 +1171,13 @@
         }
 
         function escapeHtml(str) {
-            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
         }
 
         // 5. Interactive Touch & Navigation Keys
@@ -1203,20 +1401,23 @@
                 const pwdBadge = acc.has_password ? `<span title="Password Protected" class="text-amber-400"><i class="fa-solid fa-key"></i></span>` : `<span title="No Password" class="text-slate-600"><i class="fa-solid fa-key"></i></span>`;
                 const totpBadge = acc.has_totp ? `<span title="2FA Seed Protected" class="text-emerald-400"><i class="fa-solid fa-shield"></i></span>` : `<span title="No 2FA Seed" class="text-slate-600"><i class="fa-solid fa-shield"></i></span>`;
 
-                const proxyText = acc.proxy_label ? `${acc.proxy_label}` : (acc.proxy_endpoint ? `${acc.proxy_endpoint}` : '<span class="text-slate-600">Direct</span>');
+                const rawProxy = acc.proxy_label || acc.proxy_endpoint;
+                const proxyText = rawProxy ? escapeHtml(rawProxy) : '<span class="text-slate-600">Direct</span>';
+                const tagBadge = acc.tag ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-pink-500/15 text-pink-300 border border-pink-500/30 font-medium">${escapeHtml(acc.tag)}</span>` : '';
 
                 return `
                     <tr class="hover:bg-slate-900/40 transition">
                         <td class="py-3 px-3">
-                            <div class="font-semibold text-slate-100 flex items-center gap-1.5">
+                            <div class="font-semibold text-slate-100 flex items-center gap-1.5 flex-wrap">
                                 <span class="w-2 h-2 rounded-full ${acc.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
-                                ${acc.username}
+                                <span>${escapeHtml(acc.username)}</span>
+                                ${tagBadge}
                             </div>
-                            <div class="text-[10px] text-slate-500">${acc.email || 'No email registered'}</div>
+                            <div class="text-[10px] text-slate-500">${escapeHtml(acc.email || 'No email registered')}</div>
                         </td>
                         <td class="py-3 px-3">
-                            <div class="font-mono text-[11px] text-slate-300">${pkg}</div>
-                            <div class="text-[10px] text-slate-500 font-mono">${dev}</div>
+                            <div class="font-mono text-[11px] text-slate-300">${escapeHtml(pkg)}</div>
+                            <div class="text-[10px] text-slate-500 font-mono">${escapeHtml(dev)}</div>
                         </td>
                         <td class="py-3 px-3 text-slate-300 truncate max-w-[140px]">${proxyText}</td>
                         <td class="py-3 px-3">
@@ -1249,6 +1450,7 @@
             document.getElementById('accountModalTitle').innerHTML = `<i class="fa-solid fa-user text-pink-500"></i> Add Account`;
             document.getElementById('formAccountId').value = '';
             document.getElementById('formUsername').value = '';
+            document.getElementById('formTag').value = '';
             document.getElementById('formEmail').value = '';
             document.getElementById('formDeviceSerial').value = '';
             document.getElementById('formPackageName').value = 'com.instagram.android';
@@ -1260,12 +1462,19 @@
             document.getElementById('accountModal').classList.remove('hidden');
         }
 
+        function openAddAccountWithClone(packageName, deviceSerial) {
+            openAccountModal();
+            if (packageName) document.getElementById('formPackageName').value = packageName;
+            if (deviceSerial) document.getElementById('formDeviceSerial').value = deviceSerial;
+        }
+
         function editAccountModal(id) {
             const acc = allAccounts.find(a => a.id === id);
             if (!acc) return;
-            document.getElementById('accountModalTitle').innerHTML = `<i class="fa-solid fa-user-pen text-indigo-400"></i> Edit Account: ${acc.username}`;
+            document.getElementById('accountModalTitle').innerHTML = `<i class="fa-solid fa-user-pen text-indigo-400"></i> Edit Account: ${escapeHtml(acc.username)}`;
             document.getElementById('formAccountId').value = acc.id;
             document.getElementById('formUsername').value = acc.username || '';
+            document.getElementById('formTag').value = acc.tag || '';
             document.getElementById('formEmail').value = acc.email || '';
             document.getElementById('formDeviceSerial').value = acc.device_serial || '';
             document.getElementById('formPackageName').value = acc.package_name || 'com.instagram.android';
@@ -1286,6 +1495,7 @@
             const id = document.getElementById('formAccountId').value;
             const payload = {
                 username: document.getElementById('formUsername').value.trim(),
+                tag: document.getElementById('formTag').value.trim() || null,
                 email: document.getElementById('formEmail').value.trim() || null,
                 device_serial: document.getElementById('formDeviceSerial').value.trim() || null,
                 package_name: document.getElementById('formPackageName').value.trim() || 'com.instagram.android',
@@ -1362,6 +1572,26 @@
                 const clones = data.clones || [];
                 document.getElementById('clonesCountBadge').innerText = `${clones.length} Packages`;
 
+                // Update datalists & apkTargetDevice
+                const pkgDatalist = document.getElementById('clonePackagesDatalist');
+                if (pkgDatalist) {
+                    const pkgs = Array.from(new Set(clones.map(c => c.package_name).filter(Boolean)));
+                    pkgDatalist.innerHTML = pkgs.map(p => `<option value="${escapeHtml(p)}">`).join('');
+                }
+
+                const devDatalist = document.getElementById('devicesDatalist');
+                const apkTargetSelect = document.getElementById('apkTargetDevice');
+                const serials = Array.from(new Set(clones.map(c => c.device_serial).filter(Boolean)));
+                if (devDatalist) {
+                    devDatalist.innerHTML = serials.map(s => `<option value="${escapeHtml(s)}">`).join('');
+                }
+                if (apkTargetSelect) {
+                    const currentVal = apkTargetSelect.value;
+                    apkTargetSelect.innerHTML = `<option value="">Auto-Detect Primary Device</option>` +
+                        serials.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+                    if (currentVal) apkTargetSelect.value = currentVal;
+                }
+
                 const container = document.getElementById('clonesList');
                 if (clones.length === 0) {
                     container.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">No clone packages scanned yet. Click 'Scan Clones'.</div>`;
@@ -1372,12 +1602,15 @@
                     <div class="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 flex items-center justify-between gap-3 text-xs">
                         <div class="truncate">
                             <div class="font-semibold text-slate-200 truncate flex items-center gap-1.5">
-                                ${c.app_name || c.package_name}
+                                ${escapeHtml(c.app_name || c.package_name)}
                                 ${c.is_confirmed ? `<span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">Confirmed</span>` : `<span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-800">Unconfirmed</span>`}
                             </div>
-                            <div class="text-[10px] text-slate-400 font-mono truncate">${c.package_name}</div>
+                            <div class="text-[10px] text-slate-400 font-mono truncate">${escapeHtml(c.package_name)}</div>
                         </div>
                         <div class="flex items-center gap-1.5">
+                            <button onclick="openAddAccountWithClone('${escapeHtml(c.package_name)}', '${escapeHtml(c.device_serial || '')}')" class="px-2 py-1 rounded text-[11px] font-semibold bg-pink-600/80 hover:bg-pink-600 text-white transition" title="Assign account to this clone">
+                                Assign
+                            </button>
                             <button onclick="toggleCloneConfirm(${c.id}, ${!c.is_confirmed})" class="px-2 py-1 rounded text-[11px] font-semibold ${c.is_confirmed ? 'bg-slate-800 hover:bg-rose-950 hover:text-rose-300 text-slate-300' : 'bg-emerald-600 hover:bg-emerald-500 text-white'} transition">
                                 ${c.is_confirmed ? 'Unconfirm' : 'Confirm'}
                             </button>
@@ -1480,16 +1713,31 @@
             }
         }
 
-        // --- Excel Import Modal ---
+        // --- Universal Column Matcher & Account Import ---
+        let uploadedParsedFile = null;
+
         function openExcelModal() {
-            document.getElementById('excelFileInput').value = '';
-            document.getElementById('excelPreviewContainer').classList.add('hidden');
-            document.getElementById('excelErrorsList').classList.add('hidden');
+            resetImportStep();
             document.getElementById('excelModal').classList.remove('hidden');
         }
 
         function closeExcelModal() {
             document.getElementById('excelModal').classList.add('hidden');
+            resetImportStep();
+        }
+
+        function resetImportStep() {
+            uploadedParsedFile = null;
+            const fileInput = document.getElementById('excelFileInput');
+            if (fileInput) fileInput.value = '';
+            document.getElementById('importStepUpload').classList.remove('hidden');
+            document.getElementById('importStepMapping').classList.add('hidden');
+            document.getElementById('commitMappedImportBtn').classList.add('hidden');
+            const errBox = document.getElementById('importErrorsContainer');
+            if (errBox) {
+                errBox.classList.add('hidden');
+                errBox.innerHTML = '';
+            }
         }
 
         async function handleExcelFileSelect(input) {
@@ -1499,52 +1747,262 @@
             formData.append('file', file);
 
             try {
-                const res = await fetch('/api/excel/preview', { method: 'POST', body: formData });
+                const res = await fetch('/api/accounts/parse-file', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (!res.ok || !data.success) {
-                    alert(data.error || "Failed to parse Excel spreadsheet.");
+                    alert(data.error || "Failed to parse account file.");
                     return;
                 }
 
-                excelParsedData = data;
-                document.getElementById('previewToCreate').innerText = `${data.to_create.length} New`;
-                document.getElementById('previewToUpdate').innerText = `${data.to_update.length} Updates`;
+                uploadedParsedFile = data;
+                document.getElementById('uploadedFileBadge').innerText = `${file.name} (${data.total_rows} rows parsed)`;
 
-                const errorsContainer = document.getElementById('excelErrorsList');
-                if (data.errors && data.errors.length > 0) {
-                    errorsContainer.innerHTML = data.errors.map(err => `<div>• ${err}</div>`).join('');
-                    errorsContainer.classList.remove('hidden');
-                } else {
-                    errorsContainer.classList.add('hidden');
-                }
+                // Populate column selects
+                const mappingFields = [
+                    { id: 'mapCol_username', key: 'username' },
+                    { id: 'mapCol_password', key: 'password' },
+                    { id: 'mapCol_totp_seed', key: 'totp_seed' },
+                    { id: 'mapCol_tag', key: 'tag' },
+                    { id: 'mapCol_notes', key: 'notes' },
+                    { id: 'mapCol_proxy_endpoint', key: 'proxy_endpoint' },
+                    { id: 'mapCol_device_serial', key: 'device_serial' },
+                    { id: 'mapCol_package_name', key: 'package_name' }
+                ];
 
-                document.getElementById('excelPreviewContainer').classList.remove('hidden');
+                const detected = data.detected_mapping || {};
+                const headers = data.headers || [];
+
+                mappingFields.forEach(f => {
+                    const el = document.getElementById(f.id);
+                    if (!el) return;
+                    let opts = `<option value="">-- Leave Unmapped / Use Default --</option>`;
+                    headers.forEach(h => {
+                        opts += `<option value="${escapeHtml(h)}">${escapeHtml(h)}</option>`;
+                    });
+                    el.innerHTML = opts;
+                    if (detected[f.key]) {
+                        el.value = detected[f.key];
+                    }
+                });
+
+                document.getElementById('importStepUpload').classList.add('hidden');
+                document.getElementById('importStepMapping').classList.remove('hidden');
+                document.getElementById('commitMappedImportBtn').classList.remove('hidden');
+
+                updateLivePreview();
             } catch (e) {
                 alert("Upload error: " + e);
             }
         }
 
-        async function commitExcelImport() {
-            if (!excelParsedData) return;
+        function updateLivePreview() {
+            if (!uploadedParsedFile || !uploadedParsedFile.preview_rows) return;
+            const uCol = document.getElementById('mapCol_username').value;
+            const pCol = document.getElementById('mapCol_password').value;
+            const tCol = document.getElementById('mapCol_totp_seed').value;
+            const tagCol = document.getElementById('mapCol_tag').value;
+            const proxyCol = document.getElementById('mapCol_proxy_endpoint').value;
+            const pkgCol = document.getElementById('mapCol_package_name').value;
+            const defaultPkg = document.getElementById('defaultPackageNameInput').value || 'com.instagram.android';
+
+            const tbody = document.getElementById('liveMappedPreviewTbody');
+            const rows = uploadedParsedFile.preview_rows;
+            if (rows.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-3 text-center text-slate-500">No rows found in file.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = rows.map(r => {
+                const uVal = uCol && r[uCol] ? escapeHtml(r[uCol]) : '<span class="text-rose-400 italic">Unmapped</span>';
+                const pVal = pCol && r[pCol] ? '<span class="text-amber-400 font-mono">•••••••• (Masked)</span>' : '<span class="text-slate-500">—</span>';
+                const tVal = tCol && r[tCol] ? '<span class="text-amber-400 font-mono">TOTP Set (Masked)</span>' : '<span class="text-slate-500">—</span>';
+                const tagVal = tagCol && r[tagCol] ? escapeHtml(r[tagCol]) : '<span class="text-slate-500">—</span>';
+                const proxyVal = proxyCol && r[proxyCol] ? escapeHtml(r[proxyCol]) : '<span class="text-slate-500">—</span>';
+                const pkgVal = pkgCol && r[pkgCol] ? escapeHtml(r[pkgCol]) : escapeHtml(defaultPkg);
+
+                return `<tr>
+                    <td class="py-1.5 px-2.5 font-medium text-slate-200">${uVal}</td>
+                    <td class="py-1.5 px-2.5">${pVal}</td>
+                    <td class="py-1.5 px-2.5">${tVal}</td>
+                    <td class="py-1.5 px-2.5 text-slate-300">${tagVal}</td>
+                    <td class="py-1.5 px-2.5 text-slate-400 font-mono">${proxyVal}</td>
+                    <td class="py-1.5 px-2.5 text-slate-300 font-mono">${pkgVal}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function executeMappedImport() {
+            if (!uploadedParsedFile || !uploadedParsedFile.import_token) {
+                alert("No active import session. Please select a file first.");
+                return;
+            }
+
+            const uCol = document.getElementById('mapCol_username').value;
+            if (!uCol) {
+                alert("Please select which column represents Username (Required).");
+                return;
+            }
+
+            const mapping = {
+                username: uCol,
+                password: document.getElementById('mapCol_password').value || null,
+                totp_seed: document.getElementById('mapCol_totp_seed').value || null,
+                tag: document.getElementById('mapCol_tag').value || null,
+                notes: document.getElementById('mapCol_notes').value || null,
+                proxy_endpoint: document.getElementById('mapCol_proxy_endpoint').value || null,
+                device_serial: document.getElementById('mapCol_device_serial').value || null,
+                package_name: document.getElementById('mapCol_package_name').value || null
+            };
+
+            const default_device_serial = document.getElementById('defaultDeviceSerialInput').value.trim() || null;
+            const default_package_name = document.getElementById('defaultPackageNameInput').value.trim() || 'com.instagram.android';
+
+            const btn = document.getElementById('commitMappedImportBtn');
+            btn.disabled = true;
+            btn.innerText = "Importing...";
+
             try {
-                const res = await fetch('/api/excel/import', {
+                const res = await fetch('/api/accounts/import-commit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        to_create: excelParsedData.to_create,
-                        to_update: excelParsedData.to_update
+                        import_token: uploadedParsedFile.import_token,
+                        mapping: mapping,
+                        default_device_serial: default_device_serial,
+                        default_package_name: default_package_name
                     })
                 });
                 const data = await res.json();
-                if (res.ok) {
-                    alert(`Import completed! Created: ${data.result.created}, Updated: ${data.result.updated}`);
+                if (res.ok && data.success) {
+                    const result = data.result || {};
+                    let msg = `Import Successful!\nCreated: ${result.created || 0} account(s)\nUpdated: ${result.updated || 0} account(s)`;
+                    if (result.errors && result.errors.length > 0) {
+                        msg += `\nEncountered ${result.errors.length} skipped row(s).`;
+                    }
+                    alert(msg);
                     closeExcelModal();
                     loadAccounts();
                 } else {
-                    alert(data.error || "Import failed.");
+                    const errBox = document.getElementById('importErrorsContainer');
+                    if (errBox) {
+                        errBox.innerText = data.error || "Import failed.";
+                        errBox.classList.remove('hidden');
+                    } else {
+                        alert(data.error || "Import failed.");
+                    }
                 }
             } catch (e) {
                 alert("Commit error: " + e);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-check-double"></i> Confirm & Import Accounts`;
+            }
+        }
+
+        // --- APK Installer Logic ---
+        let selectedApkFile = null;
+
+        function openApkInstallModal() {
+            selectedApkFile = null;
+            const fileInput = document.getElementById('apkFileInput');
+            if (fileInput) fileInput.value = '';
+            document.getElementById('apkFileTitle').innerText = "Click to choose local .apk file from PC";
+            document.getElementById('apkFileSize').innerText = "Compatible with AppCloner, DualSpace, ParallelSpace clones (Max 250MB)";
+            const statusBox = document.getElementById('apkInstallStatusBox');
+            if (statusBox) {
+                statusBox.classList.add('hidden');
+                statusBox.innerHTML = '';
+            }
+            const btn = document.getElementById('btnExecuteApkInstall');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-play"></i> Install to Phone`;
+            }
+            document.getElementById('apkInstallModal').classList.remove('hidden');
+        }
+
+        function closeApkInstallModal() {
+            document.getElementById('apkInstallModal').classList.add('hidden');
+            selectedApkFile = null;
+        }
+
+        function handleApkFileChosen(input) {
+            if (!input.files || !input.files[0]) return;
+            const file = input.files[0];
+            if (!file.name.toLowerCase().endsWith('.apk')) {
+                alert("Please select a valid Android package file (.apk).");
+                input.value = '';
+                return;
+            }
+            if (file.size > 250 * 1024 * 1024) {
+                alert("File exceeds maximum allowed size (250MB).");
+                input.value = '';
+                return;
+            }
+
+            selectedApkFile = file;
+            const mb = (file.size / (1024 * 1024)).toFixed(1);
+            document.getElementById('apkFileTitle').innerText = file.name;
+            document.getElementById('apkFileSize').innerText = `${mb} MB • Ready to install`;
+        }
+
+        async function executeApkInstall() {
+            if (!selectedApkFile) {
+                alert("Please select an .apk file to install.");
+                return;
+            }
+
+            const deviceSerial = document.getElementById('apkTargetDevice').value.trim();
+            const btn = document.getElementById('btnExecuteApkInstall');
+            const statusBox = document.getElementById('apkInstallStatusBox');
+
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Installing...`;
+            statusBox.className = "p-3 rounded-xl text-xs space-y-1 bg-indigo-950/60 border border-indigo-800 text-indigo-300";
+            statusBox.innerHTML = `<div class="font-semibold flex items-center gap-1.5"><i class="fa-solid fa-spinner fa-spin"></i> Pushing and installing APK via ADB...</div><div class="text-[11px] text-slate-400">Please watch your phone screen if it asks to "Allow USB Debugging / Install via USB".</div>`;
+            statusBox.classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('apk_file', selectedApkFile);
+            if (deviceSerial) {
+                formData.append('device_serial', deviceSerial);
+            }
+
+            try {
+                const res = await fetch('/api/clones/install-apk', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    statusBox.className = "p-3 rounded-xl text-xs space-y-1 bg-emerald-950/60 border border-emerald-800 text-emerald-300";
+                    statusBox.innerHTML = `
+                        <div class="font-bold flex items-center gap-1.5"><i class="fa-solid fa-circle-check"></i> Installation Succeeded!</div>
+                        <div>Target Device: <strong class="font-mono text-slate-200">${escapeHtml(data.device_serial || 'Default')}</strong></div>
+                        <div>Package ID: <strong class="font-mono text-slate-200">${escapeHtml(data.package_name || 'Detected')}</strong></div>
+                        <div class="text-[11px] text-emerald-400/80">Clone inventory updated automatically. You can now bind accounts to this package.</div>
+                    `;
+                    loadClones();
+                } else {
+                    const status = data.status || 'error';
+                    statusBox.className = "p-3 rounded-xl text-xs space-y-1 bg-rose-950/60 border border-rose-800 text-rose-300";
+                    let friendlyMsg = data.message || data.error || "Installation failed.";
+                    if (status === 'already_exists') {
+                        statusBox.className = "p-3 rounded-xl text-xs space-y-1 bg-amber-950/60 border border-amber-800 text-amber-300";
+                    }
+                    statusBox.innerHTML = `
+                        <div class="font-bold flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(status.toUpperCase())}</div>
+                        <div>${escapeHtml(friendlyMsg)}</div>
+                        ${data.package_name ? `<div>Package ID: <span class="font-mono text-slate-300">${escapeHtml(data.package_name)}</span></div>` : ''}
+                    `;
+                }
+            } catch (e) {
+                statusBox.className = "p-3 rounded-xl text-xs space-y-1 bg-rose-950/60 border border-rose-800 text-rose-300";
+                statusBox.innerHTML = `<div class="font-bold">Network / Execution Error</div><div>${escapeHtml(String(e))}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-play"></i> Install to Phone`;
             }
         }
 
