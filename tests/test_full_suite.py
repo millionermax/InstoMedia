@@ -4505,5 +4505,74 @@ class TestPerTaskScreenRecording(unittest.TestCase):
         self.assertIn("PermissionError", err_events[0]["message"])
 
 
+class TestHumanBehaviorEngineV2(unittest.TestCase):
+    """
+    Tests for HumanBehaviorEngine v2.0 (Phase 1 & Phase 2 Anti-Bot Upgrades):
+    - Biomechanical asymmetric ballistic thumb jerk velocity fluctuation (> 0.20)
+    - Path redundancy (~2.0% to 10.0% wander vs straight chord)
+    - Contact dwell micro-wobble (tissue drift within safe bounds)
+    - Heavy-tailed log-normal cognitive delay (positive skewness > 0, bounded)
+    """
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+        from human_behavior import HumanBehaviorEngine
+        self.mock_device = MagicMock()
+        self.mock_device.info = {"displayWidth": 720, "displayHeight": 1600}
+        self.engine = HumanBehaviorEngine(self.mock_device)
+
+    def test_velocity_fluctuation_and_jerk(self):
+        import math
+        path = self.engine.generate_human_swipe_path((360, 1200), (360, 400), num_steps=14)
+        self.assertEqual(len(path), 15)
+        step_dists = [math.hypot(path[i][0] - path[i-1][0], path[i][1] - path[i-1][1]) for i in range(1, len(path))]
+        mean_v = sum(step_dists) / len(step_dists)
+        std_v = math.sqrt(sum((v - mean_v)**2 for v in step_dists) / len(step_dists))
+        fluctuation = std_v / (mean_v + 1e-6)
+        # Software injectors have fluctuation ~ 0, while human thumb exhibits > 0.20 (typically ~0.40 - 0.55)
+        self.assertGreater(fluctuation, 0.20, f"Expected velocity fluctuation > 0.20, got {fluctuation:.3f}")
+
+    def test_path_redundancy_and_wander(self):
+        import math
+        start = (360, 1300)
+        end = (360, 300)
+        chord_dist = math.hypot(end[0] - start[0], end[1] - start[1])
+        redundancies = []
+        for _ in range(5):
+            path = self.engine.generate_human_swipe_path(start, end, num_steps=16)
+            path_len = sum(math.hypot(path[i][0] - path[i-1][0], path[i][1] - path[i-1][1]) for i in range(1, len(path)))
+            redundancy = (path_len / chord_dist - 1.0) * 100.0
+            redundancies.append(redundancy)
+        avg_redundancy = sum(redundancies) / len(redundancies)
+        self.assertGreater(avg_redundancy, 1.5, f"Expected average path redundancy > 1.5%, got {avg_redundancy:.2f}%")
+        self.assertLess(avg_redundancy, 12.0, f"Expected average path redundancy < 12.0%, got {avg_redundancy:.2f}%")
+
+    def test_click_dwell_and_micro_wobble(self):
+        touch_events = []
+        self.mock_device.touch.down = lambda x, y: touch_events.append(("down", x, y))
+        self.mock_device.touch.move = lambda x, y: touch_events.append(("move", x, y))
+        self.mock_device.touch.up = lambda x, y: touch_events.append(("up", x, y))
+
+        with patch("human_behavior.time.sleep", return_value=None):
+            x, y = self.engine.click((300, 500))
+
+        self.assertTrue(len(touch_events) >= 2)
+        down_ev = [ev for ev in touch_events if ev[0] == "down"][0]
+        up_ev = [ev for ev in touch_events if ev[0] == "up"][0]
+        self.assertLessEqual(abs(down_ev[1] - x), 3)
+        self.assertLessEqual(abs(down_ev[2] - y), 3)
+        self.assertLessEqual(abs(up_ev[1] - x), 4)
+        self.assertLessEqual(abs(up_ev[2] - y), 4)
+
+    def test_heavy_tailed_sleep_distribution(self):
+        with patch("human_behavior.time.sleep", return_value=None):
+            samples = [self.engine.sleep(1.0, jitter_ratio=0.3) for _ in range(200)]
+        mean = sum(samples) / len(samples)
+        var = sum((s - mean)**2 for s in samples) / len(samples)
+        skewness = sum((s - mean)**3 for s in samples) / (len(samples) * (var ** 1.5))
+        self.assertGreater(skewness, 0.1, f"Expected positive skewness for cognitive pause, got {skewness:.3f}")
+        self.assertTrue(all(0.12 <= s <= 2.2 for s in samples))
+
+
 if __name__ == "__main__":
     unittest.main()

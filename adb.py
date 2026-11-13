@@ -42,10 +42,29 @@ class InstagramReelUploader:
             # Initialize Human Biometrics & Anti-Bot Engine
             self.human = HumanBehaviorEngine(self.d)
             self.log("success", f"Connected: {self.device_name} (Serial: {self.d.serial}) | Anti-Bot Human Engine: ACTIVE")
+            self._ensure_device_permissions()
             self._detect_username()
         except Exception as e:
             self.log("error", f"Failed to connect to ADB device: {e}")
             raise
+
+    def _ensure_device_permissions(self):
+        """Pre-emptively grants standard runtime permissions to target clone via ADB shell pm grant to avoid dialog stalls."""
+        if not self.package_name or not hasattr(self, "d") or not self.d:
+            return
+        perms = [
+            "android.permission.CAMERA",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+        ]
+        for p in perms:
+            try:
+                self.d.shell(f"pm grant {self.package_name} {p}")
+            except Exception:
+                pass
 
     @staticmethod
     def normalize_audio_url(audio_url):
@@ -174,15 +193,36 @@ class InstagramReelUploader:
             self.human.sleep(0.8)
             return True
 
+        # Handle system permission dialogs (GrantPermissionsActivity)
+        if "permissioncontroller" in (curr_pkg or "").lower() or "packageinstaller" in (curr_pkg or "").lower():
+            for full_id in [
+                "com.android.permissioncontroller:id/permission_allow_button",
+                "com.android.permissioncontroller:id/permission_allow_foreground_only_button",
+                "com.android.permissioncontroller:id/permission_allow_one_time_button",
+                "com.android.packageinstaller:id/permission_allow_button",
+            ]:
+                perm_btn = self.d(resourceId=full_id)
+                if self._selector_exists(perm_btn):
+                    self.log("info", f"Self-healing: Auto-granted system permission via {full_id}.")
+                    self.human.click(perm_btn)
+                    self.human.sleep(0.6)
+                    return True
+            perm_text_sel = self.d(textMatches="(?i)^.*(while using the app|allow only while using the app|allow|allow all).*$")
+            if self._selector_exists(perm_text_sel):
+                self.log("info", "Self-healing: Auto-granted system permission via text match.")
+                self.human.click(perm_text_sel)
+                self.human.sleep(0.6)
+                return True
+
         popups = [
             ("Not now", self.d(textMatches="(?i)^not now$")),
             ("Dismiss", self.d(textMatches="(?i)^dismiss$")),
             ("Got it", self.d(textMatches="(?i)^got it$")),
             ("OK", self.d(textMatches="(?i)^ok$")),
             ("Cancel", self.d(textMatches="(?i)^cancel$")),
-            ("Allow", self.d(textMatches="(?i)^(allow|while using the app)$")),
-            ("Don't allow", self.d(textMatches="(?i)^don't allow$")),
+            ("Allow", self.d(textMatches="(?i)^.*(allow|while using the app).*$")),
             ("Close button", self.d(descriptionMatches="(?i)^(close|dismiss)$")),
+            ("Try Meta One Dismiss", self.d(textMatches="(?i)^(not now|cancel|close)$")),
         ]
         for name, selector in popups:
             try:
@@ -389,6 +429,9 @@ class InstagramReelUploader:
         self.evidence["gallery_selector"] = None
         self.log("info", f"Opening Instagram audio link in {self.package_name}: {normalized_url}", step=1)
 
+        # Anti-speedrun cadence: natural ambient settling pause before firing deep link
+        self.human.sleep(1.2, jitter_ratio=0.25)
+
         # APKCloner clones drop VIEW intents routed via UrlHandlerLauncherActivity; targeting
         # {package}/com.instagram.mainactivity.InstagramMainActivity with -S clears any stale launcher-hidden task
         # and works cleanly on both official & cloned APKs.
@@ -444,9 +487,14 @@ class InstagramReelUploader:
             "Audio Track Page",
             lambda: self._is_target_in_foreground() and (
                 self._selector_exists(self.d(text="Use audio"))
+                or self._selector_exists(self.d(textMatches=r"(?i)^\s*use audio\s*$"))
+                or self._selector_exists(self.d(description="Use audio"))
+                or self._selector_exists(self.d(descriptionMatches=r"(?i)^\s*use audio\s*$"))
                 or self._any_id_exists("use_in_camera_header_button")
+                or self._any_id_exists("use_in_camera_button_scene_root")
+                or self._any_id_exists("clips_pivot_page_fragment")
             ),
-            timeout=16,
+            timeout=25,
             require_target_foreground=True,
         )
         self.log("success", f"Audio page verified and ready in {self.package_name}.", step=1)
@@ -457,9 +505,14 @@ class InstagramReelUploader:
         self._ensure_target_foreground(step=2, timeout=2.0, context="Use audio step")
         self.log("info", "Tapping 'Use audio' button (Human touch)...", step=2)
 
-        btn_candidates = [("text='Use audio'", self.d(text="Use audio"))] + [
+        btn_candidates = [
+            ("text='Use audio'", self.d(text="Use audio")),
+            ("textMatches='(?i)^\\s*use audio\\s*$'", self.d(textMatches=r"(?i)^\s*use audio\s*$")),
+            ("description='Use audio'", self.d(description="Use audio")),
+            ("descriptionMatches='(?i)^\\s*use audio\\s*$'", self.d(descriptionMatches=r"(?i)^\s*use audio\s*$")),
+        ] + [
             (f"resourceId='{rid}'", self.d(resourceId=rid))
-            for rid in self._id_candidates("use_in_camera_header_button")
+            for rid in self._id_candidates("use_in_camera_header_button") + self._id_candidates("use_in_camera_button_scene_root")
         ]
         btn_desc, use_audio_btn = self._find_first_selector(btn_candidates)
         if not use_audio_btn:
@@ -799,32 +852,52 @@ class InstagramReelUploader:
         self.log("success", "Toggles configured and confirmed.", step=8)
 
     def share_reel(self):
-        """Step 9: Click Share and VERIFY share screen is dismissed (upload commenced)."""
+        """Step 9: Click Share/Next and VERIFY share screen is dismissed (upload commenced)."""
         self.check_cancelled()
         self.handle_unexpected_popups()
         self.log("info", "Tapping 'Share' button (Human touch)...", step=9)
+
         share_btn = self._id_selector("share_button")
-        if not share_btn.exists:
-            share_btn = self.d(text="Share")
+        if not self._selector_exists(share_btn):
+            share_btn = self.d(textMatches="(?i)^(share|next)$")
 
         # If share button is scrolled off-view, scroll down to reveal it
-        if not share_btn.exists:
+        if not self._selector_exists(share_btn):
             self.human.scroll_down(stride_ratio=0.35)
             self.human.sleep(0.5)
             share_btn = self._id_selector("share_button")
-            if not share_btn.exists:
-                share_btn = self.d(text="Share")
+            if not self._selector_exists(share_btn):
+                share_btn = self.d(textMatches="(?i)^(share|next)$")
 
-        if not share_btn.wait(timeout=10):
+        if not self._selector_exists(share_btn) and not share_btn.wait(timeout=10):
             raise TimeoutError("Share button not found on Share screen.")
+
+        btn_text = ""
+        try:
+            info = getattr(share_btn, "info", {}) or {}
+            btn_text = str(info.get("text") or info.get("contentDescription") or "").lower()
+        except Exception:
+            pass
 
         self.human.click(share_btn)
 
-        # State Verification 9: Verify Share screen is dismissed
+        # If the button was 'Next', Instagram may display a secondary 'Share' button or sheet
+        if "next" in btn_text:
+            self.human.sleep(1.2)
+            self.handle_unexpected_popups()
+            sec_share = self.d(textMatches="(?i)^share$")
+            if self._selector_exists(sec_share):
+                self.log("info", "Tapping secondary 'Share' button...", step=9)
+                self.human.click(sec_share)
+
+        # State Verification 9: Verify Share screen is dismissed or feed active
         self.wait_and_verify_screen(
             "Share Screen Dismissed (Upload Started)",
-            lambda: not self._any_id_exists("share_button"),
-            timeout=12,
+            lambda: not self._any_id_exists("share_button")
+                    or not self.d(textMatches="(?i)^(share|next)$").exists
+                    or self._any_id_exists("feed_tab")
+                    or self.d(description="Home").exists,
+            timeout=16,
             require_target_foreground=True,
         )
         self.log("success", "Reel submitted for upload!", step=9)
