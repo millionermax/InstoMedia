@@ -64,22 +64,130 @@ def run_adb_command(cmd: List[str], device_serial: Optional[str] = None, timeout
         return ""
 
 
-def list_connected_devices() -> List[Dict[str, str]]:
-    """Returns a list of connected ADB devices with serial and status."""
-    output = run_adb_command(["devices"])
-    devices = []
-    lines = output.splitlines()
-    for line in lines[1:]:
-        line = line.strip()
-        if not line:
+def list_connected_devices() -> List[Dict[str, Any]]:
+    """
+    Returns connected ADB devices with explicit serial, status, product_name (when online
+    and available), and selectable flag (True only when status == 'device').
+    Does not fall back to or select invalid/unauthorized/offline devices.
+    """
+    output = run_adb_command(["devices", "-l"])
+    devices: List[Dict[str, Any]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("*") or line.lower().startswith("list of devices"):
             continue
         parts = line.split()
-        if len(parts) >= 2:
-            devices.append({
-                "serial": parts[0],
-                "status": parts[1]
-            })
+        if len(parts) < 2:
+            continue
+        serial = parts[0]
+        status = parts[1]
+        props: Dict[str, str] = {}
+        for token in parts[2:]:
+            if ":" in token:
+                k, v = token.split(":", 1)
+                props[k] = v
+
+        product_name: Optional[str] = None
+        if status == "device":
+            raw_model = props.get("model") or props.get("product") or props.get("device")
+            if raw_model:
+                product_name = raw_model.replace("_", " ").strip()
+
+        devices.append({
+            "serial": serial,
+            "status": status,
+            "product_name": product_name,
+            "selectable": (status == "device"),
+        })
     return devices
+
+
+class OnboardingValidationError(ValueError):
+    """Raised when device/package validation fails during explicit onboarding."""
+
+    def __init__(self, message: str, code: str = "validation_error", http_status: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.http_status = http_status
+
+
+def require_online_device(device_serial: Optional[str]) -> Dict[str, Any]:
+    """
+    Requires an explicit device serial currently connected in ADB 'device' state.
+    Raises OnboardingValidationError if missing, unknown, offline, or unauthorized.
+    Never falls back to the first connected device.
+    """
+    serial = str(device_serial or "").strip()
+    if not serial:
+        raise OnboardingValidationError(
+            "An explicit Android device serial is required.",
+            code="missing_device_serial",
+            http_status=400,
+        )
+
+    devices = list_connected_devices()
+    matched = next((d for d in devices if d["serial"] == serial), None)
+    if not matched:
+        raise OnboardingValidationError(
+            f"Device '{serial}' is not connected. Refresh devices and select an online phone.",
+            code="device_not_online",
+            http_status=400,
+        )
+    if matched.get("status") != "device":
+        raise OnboardingValidationError(
+            f"Device '{serial}' has ADB status '{matched.get('status')}' and cannot be used until authorized and online.",
+            code="device_not_online",
+            http_status=400,
+        )
+    return matched
+
+
+def validate_confirmed_package(
+    device_serial: Optional[str],
+    package_name: Optional[str],
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Verifies that the selected device is online, the exact package is actively
+    installed on that device serial, and the package is confirmed in the clone
+    inventory for that same device serial. Does not launch the app.
+    """
+    device = require_online_device(device_serial)
+    serial = device["serial"]
+
+    pkg = str(package_name or "").strip()
+    if not pkg:
+        raise OnboardingValidationError(
+            "An explicit package name is required.",
+            code="missing_package_name",
+            http_status=400,
+        )
+
+    if not is_package_installed(pkg, device_serial=serial):
+        raise OnboardingValidationError(
+            f"Package '{pkg}' is not currently installed on device '{serial}'.",
+            code="package_not_installed",
+            http_status=400,
+        )
+
+    clones = db.get_clones(device_serial=serial, confirmed_only=False, db_path=db_path)
+    clone_row = next((c for c in clones if c["package_name"] == pkg), None)
+    if not clone_row or not bool(clone_row.get("is_confirmed")):
+        raise OnboardingValidationError(
+            f"Package '{pkg}' is not confirmed for device '{serial}'. Scan and confirm it first.",
+            code="package_not_confirmed",
+            http_status=400,
+        )
+
+    return {
+        "valid": True,
+        "device_serial": serial,
+        "package_name": pkg,
+        "clone_id": clone_row["id"],
+        "app_name": clone_row.get("app_name") or pkg,
+        "device": device,
+    }
 
 
 def get_foreground_package(device_serial: Optional[str] = None) -> Optional[str]:
@@ -104,6 +212,17 @@ def is_package_installed(package_name: str, device_serial: Optional[str] = None)
 def get_third_party_packages(device_serial: Optional[str] = None) -> Set[str]:
     """Helper to query current third-party packages installed on the target device."""
     output = run_adb_command(["shell", "pm", "list", "packages", "-3"], device_serial=device_serial)
+    pkgs = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("package:"):
+            pkgs.add(line.replace("package:", "").strip())
+    return pkgs
+
+
+def get_all_installed_packages(device_serial: str) -> Set[str]:
+    """Queries all installed package names on the specified explicit device serial."""
+    output = run_adb_command(["shell", "pm", "list", "packages"], device_serial=device_serial)
     pkgs = set()
     for line in output.splitlines():
         line = line.strip()
@@ -293,9 +412,8 @@ def scan_packages(device_serial: Optional[str] = None, db_path: Optional[str] = 
         if line.startswith("package:"):
             all_packages.add(line.replace("package:", "").strip())
 
-    # Always ensure official package is evaluated
-    all_packages.add(OFFICIAL_INSTAGRAM_PKG)
-
+    # Note: official com.instagram.android is included above via `pm list packages instagram`
+    # only when actually installed on this target device.
     foreground_pkg = get_foreground_package(device_serial=serial)
 
     # Load existing clones from DB to preserve confirmation state for THIS device serial

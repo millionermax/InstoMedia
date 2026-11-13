@@ -4,6 +4,7 @@ import re
 import sys
 import time
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse, urlunparse
 import uiautomator2 as u2
 
 from human_behavior import HumanBehaviorEngine
@@ -16,15 +17,27 @@ PACKAGE_NAME = "com.instagram.android"
 
 class InstagramReelUploader:
     def __init__(self, device_serial=None, package_name=PACKAGE_NAME, log_callback=None):
-        self.package_name = package_name
+        self.package_name = (package_name or PACKAGE_NAME).strip() or PACKAGE_NAME
         self.log_callback = log_callback or self._default_log
         self.is_cancelled = False
-        self.device_serial = device_serial
+        if device_serial is not None and not str(device_serial).strip():
+            raise ValueError("Explicit device_serial cannot be empty.")
+        self.device_serial = str(device_serial).strip() if device_serial else None
         self.username = None
+        self._staged_video_path = None
+        self.evidence = {
+            "target_package": self.package_name,
+            "foreground_package": None,
+            "foreground_activity": None,
+            "intent_result": None,
+            "gallery_selector": None,
+            "selected_video": None,
+        }
 
-        self.log("info", f"Connecting to device{' ' + device_serial if device_serial else ''} via ADB...")
+        target_desc = f"device {self.device_serial} ({self.package_name})" if self.device_serial else f"default device ({self.package_name})"
+        self.log("info", f"Connecting to {target_desc} via ADB...")
         try:
-            self.d = u2.connect(device_serial) if device_serial else u2.connect()
+            self.d = u2.connect(self.device_serial) if self.device_serial else u2.connect()
             self.device_name = self.d.info.get("productName", "Unknown")
             # Initialize Human Biometrics & Anti-Bot Engine
             self.human = HumanBehaviorEngine(self.d)
@@ -33,6 +46,105 @@ class InstagramReelUploader:
         except Exception as e:
             self.log("error", f"Failed to connect to ADB device: {e}")
             raise
+
+    @staticmethod
+    def normalize_audio_url(audio_url):
+        """Validates Instagram audio URL and upgrades plain http:// links to https://."""
+        cleaned = str(audio_url or "").strip()
+        if not cleaned:
+            raise ValueError("Instagram audio URL is required.")
+        parsed = urlparse(cleaned)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
+        if scheme not in ("http", "https") or not (host == "instagram.com" or host.endswith(".instagram.com")):
+            raise ValueError("Audio URL must be a valid https://www.instagram.com/reels/audio/... link.")
+        if not any(
+            path.startswith(pfx) and len(path.rstrip("/")) >= len(pfx.rstrip("/")) + 1 and len(path) > len(pfx)
+            for pfx in ("/reels/audio/", "/audio/")
+        ):
+            raise ValueError("Audio URL must point to an Instagram audio track path (/reels/audio/<id>/).")
+        if scheme == "http":
+            return urlunparse(parsed._replace(scheme="https"))
+        return cleaned
+
+    @staticmethod
+    def _parse_shell_result(res):
+        """Normalizes uiautomator2 ShellResponse, tuple, or string results into (exit_code, output)."""
+        if res is None:
+            return None, ""
+        if isinstance(res, tuple):
+            output = str(res[0] if len(res) > 0 and res[0] is not None else "").strip()
+            exit_code = res[1] if len(res) > 1 else None
+            return exit_code, output
+        if isinstance(res, dict):
+            return res.get("exit_code"), str(res.get("output") or "").strip()
+        if hasattr(res, "output") or hasattr(res, "exit_code"):
+            return getattr(res, "exit_code", None), str(getattr(res, "output", "") or "").strip()
+        return None, str(res).strip()
+
+    @staticmethod
+    def _selector_exists(selector):
+        """Safely reads selector existence across real uiautomator2 objects and test mocks."""
+        try:
+            exists_attr = getattr(selector, "exists", False)
+            return bool(exists_attr() if callable(exists_attr) else exists_attr)
+        except Exception:
+            return False
+
+    def _id_candidates(self, suffix):
+        ids = [f"{self.package_name}:id/{suffix}"]
+        if self.package_name != PACKAGE_NAME:
+            ids.append(f"{PACKAGE_NAME}:id/{suffix}")
+        return ids
+
+    def _any_id_exists(self, suffix):
+        return any(self._selector_exists(self.d(resourceId=rid)) for rid in self._id_candidates(suffix))
+
+    def _id_selector(self, suffix):
+        """Returns matching resourceId UiObject for target package first, else default Instagram ID."""
+        for rid in self._id_candidates(suffix):
+            sel = self.d(resourceId=rid)
+            if self._selector_exists(sel):
+                return sel
+        return self.d(resourceId=f"{self.package_name}:id/{suffix}")
+
+    def _find_first_selector(self, candidates):
+        """Returns (selector_description, ui_object) for the first matching selector, else (None, None)."""
+        for label, sel in candidates:
+            if self._selector_exists(sel):
+                return label, sel
+        return None, None
+
+    def _get_foreground_app(self):
+        """Queries current foreground package and activity and records them into self.evidence."""
+        try:
+            app_info = self.d.app_current() or {}
+        except Exception:
+            app_info = {}
+        curr_pkg = app_info.get("package", "Unknown") or "Unknown"
+        curr_activity = app_info.get("activity", "Unknown") or "Unknown"
+        self.evidence["foreground_package"] = curr_pkg
+        self.evidence["foreground_activity"] = curr_activity
+        return curr_pkg, curr_activity
+
+    def _is_target_in_foreground(self):
+        curr_pkg, _ = self._get_foreground_app()
+        return curr_pkg == self.package_name
+
+    def _format_evidence(self):
+        """Formats structured failure evidence across target package, foreground, intent, gallery selector, and video."""
+        curr_pkg = self.evidence.get("foreground_package")
+        curr_act = self.evidence.get("foreground_activity")
+        if not curr_pkg or not curr_act:
+            curr_pkg, curr_act = self._get_foreground_app()
+        return (
+            f"  Target package: {self.evidence.get('target_package') or self.package_name}\n"
+            f"  Foreground: {curr_pkg}/{curr_act}\n"
+            f"  Intent result: {self.evidence.get('intent_result') or 'N/A'}\n"
+            f"  Gallery selector: {self.evidence.get('gallery_selector') or 'N/A'}\n"
+            f"  Selected video: {self.evidence.get('selected_video') or 'N/A'}"
+        )
 
     def log(self, level, message, step=None):
         """Unified logging for both CLI and GUI."""
@@ -55,10 +167,18 @@ class InstagramReelUploader:
 
     def handle_unexpected_popups(self):
         """Auto-detects and dismisses system/Instagram dialogs that could block automation."""
+        curr_pkg, _ = self._get_foreground_app()
+        if curr_pkg == "com.android.vending":
+            self.log("info", "Self-healing: Dismissed Play Store promo overlay via Back.")
+            self.d.press("back")
+            self.human.sleep(0.8)
+            return True
+
         popups = [
             ("Not now", self.d(textMatches="(?i)^not now$")),
             ("Dismiss", self.d(textMatches="(?i)^dismiss$")),
             ("Got it", self.d(textMatches="(?i)^got it$")),
+            ("OK", self.d(textMatches="(?i)^ok$")),
             ("Cancel", self.d(textMatches="(?i)^cancel$")),
             ("Allow", self.d(textMatches="(?i)^(allow|while using the app)$")),
             ("Don't allow", self.d(textMatches="(?i)^don't allow$")),
@@ -66,9 +186,9 @@ class InstagramReelUploader:
         ]
         for name, selector in popups:
             try:
-                if selector.exists(timeout=0.1):
+                if self._selector_exists(selector):
                     # Don't click Cancel if it's on the main video editor preview
-                    if name == "Cancel" and self.d(resourceId="com.instagram.android:id/clips_right_action_button").exists:
+                    if name == "Cancel" and self._any_id_exists("clips_right_action_button"):
                         continue
                     self.log("info", f"Self-healing: Auto-dismissed popup '{name}'.")
                     self.human.click(selector)
@@ -78,14 +198,16 @@ class InstagramReelUploader:
                 pass
         return False
 
-    def wait_and_verify_screen(self, state_name, verify_fn, timeout=15, auto_dismiss=True):
+    def wait_and_verify_screen(self, state_name, verify_fn, timeout=15, auto_dismiss=True, require_target_foreground=False):
         """
         Polls until verify_fn() returns True.
-        Automatically dismisses popups, handles delays, and provides detailed diagnostics on failure.
+        Automatically dismisses popups, handles delays, fails fast on wrong foreground/launcher bounce,
+        and provides detailed diagnostics on failure.
         """
         self.check_cancelled()
         self.log("info", f"Verifying screen state: [{state_name}]...")
         start_time = time.time()
+        wrong_fg_streak = 0
 
         while time.time() - start_time < timeout:
             self.check_cancelled()
@@ -97,15 +219,31 @@ class InstagramReelUploader:
             except Exception:
                 pass
 
-            if auto_dismiss:
-                self.handle_unexpected_popups()
+            if auto_dismiss and self.handle_unexpected_popups():
+                wrong_fg_streak = 0
+                continue
+
+            if require_target_foreground:
+                curr_pkg, curr_act = self._get_foreground_app()
+                if curr_pkg and curr_pkg not in ("Unknown", self.package_name):
+                    # Allow brief transition/permission installer/cold-start, fail fast on sustained wrong app or launcher bounce
+                    if "permissioncontroller" not in curr_pkg.lower() and "packageinstaller" not in curr_pkg.lower():
+                        wrong_fg_streak += 1
+                        if wrong_fg_streak >= 7:
+                            err_msg = (
+                                f"Clone launch/routing failed while verifying [{state_name}]: "
+                                f"target '{self.package_name}' is not in foreground (found '{curr_pkg}/{curr_act}').\n"
+                                f"{self._format_evidence()}"
+                            )
+                            self.log("error", err_msg)
+                            raise RuntimeError(err_msg)
+                else:
+                    wrong_fg_streak = 0
 
             time.sleep(0.4)
 
         # DIAGNOSTIC REPORT ON FAILURE
-        app_info = self.d.app_current()
-        curr_activity = app_info.get("activity", "Unknown")
-        curr_pkg = app_info.get("package", "Unknown")
+        self._get_foreground_app()
 
         visible_summary = []
         try:
@@ -120,11 +258,11 @@ class InstagramReelUploader:
         except Exception:
             pass
 
-        is_keyboard_open = self.d(resourceId="com.android.systemui:id/ime_switcher").exists
+        is_keyboard_open = self._selector_exists(self.d(resourceId="com.android.systemui:id/ime_switcher"))
 
         diag_msg = (
             f"Screen verification timed out for [{state_name}]!\n"
-            f"  Activity: {curr_pkg}/{curr_activity}\n"
+            f"{self._format_evidence()}\n"
             f"  Visible elements: {', '.join(visible_summary) if visible_summary else 'None detected'}\n"
             f"  Keyboard active: {'Yes (blocking elements)' if is_keyboard_open else 'No'}"
         )
@@ -155,131 +293,385 @@ class InstagramReelUploader:
 
         self.log("info", f"Pushing video to device: {remote_path}...")
         self.d.push(local_video_path, remote_path)
+        self._staged_video_path = remote_path
+        self.evidence["selected_video"] = safe_filename
         self.human.sleep(1.0)
 
         self.log("info", "Scanning media file into Android gallery...")
         self.d.shell(f'am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://{remote_path}"')
         self.human.sleep(1.5)
-        self.log("success", "Video successfully added to device gallery.")
+        self.log("success", f"Video successfully added to device gallery: {safe_filename}")
         return remote_path
 
-    def open_audio_page(self, audio_url):
-        """Step 1: Open Instagram Audio URL via intent and VERIFY audio screen loaded."""
-        self.check_cancelled()
-        self.log("info", f"Opening Instagram audio link: {audio_url}", step=1)
-        self.d.shell(f'am start -a android.intent.action.VIEW -d "{audio_url}" {self.package_name}')
+    def _ensure_target_foreground(self, step=None, timeout=0.0, context="step execution", settle_from_launcher=False):
+        """Verifies target clone package is currently in foreground; auto-handles permission dialogs and fails fast if bounced to launcher/wrong app."""
+        deadline = time.time() + max(0.0, float(timeout))
+        perm_deadline = time.time() + max(6.0, float(timeout))
+        curr_pkg, curr_act = self._get_foreground_app()
+        saw_target = (curr_pkg == self.package_name)
+        bounced_streak = 0
 
-        # State Verification 1: Verify audio screen loaded with 'Use audio' button
+        while True:
+            if curr_pkg == self.package_name:
+                saw_target = True
+                bounced_streak = 0
+                if not settle_from_launcher or "UrlHandlerLauncherActivity" not in (curr_act or ""):
+                    return curr_pkg, curr_act
+            elif curr_pkg and ("permissioncontroller" in curr_pkg.lower() or "packageinstaller" in curr_pkg.lower()):
+                bounced_streak = 0
+                if time.time() >= perm_deadline:
+                    break
+            else:
+                if time.time() >= deadline:
+                    break
+                if saw_target:
+                    # Target appeared briefly (e.g. UrlHandlerLauncherActivity) and then left foreground
+                    bounced_streak += 1
+                    if bounced_streak >= 2:
+                        break
+            self.check_cancelled()
+            self.handle_unexpected_popups()
+            time.sleep(0.4)
+            curr_pkg, curr_act = self._get_foreground_app()
+
+        if curr_pkg != self.package_name:
+            err_msg = (
+                f"Clone launch/routing failed (Wrong foreground app during {context}): expected '{self.package_name}', "
+                f"found '{curr_pkg}/{curr_act}'.\n{self._format_evidence()}"
+            )
+            self.log("error", err_msg, step=step)
+            raise RuntimeError(err_msg)
+        return curr_pkg, curr_act
+
+    def _is_gallery_grid_visible(self):
+        """Returns True only when target package is foreground and real gallery grid/thumbnail UI is visible."""
+        if not self._is_target_in_foreground():
+            return False
+        return (
+            self._selector_exists(self.d(descriptionMatches="(?i).*thumbnail.*"))
+            or self._any_id_exists("gallery_grid_item_thumbnail")
+            or self._any_id_exists("gallery_recycler_view")
+        )
+
+    @staticmethod
+    def _first_element(selector):
+        """Returns the first indexed child element when supported, else the selector itself."""
+        try:
+            return selector[0]
+        except Exception:
+            return selector
+
+    def _describe_ui_element(self, elem, fallback="matched_element"):
+        """Extracts a concise readable identifier from a UI element's accessibility info."""
+        try:
+            info = getattr(elem, "info", {}) or {}
+            if isinstance(info, dict):
+                desc = (info.get("contentDescription") or info.get("text") or "").strip()
+                res_id = (info.get("resourceId") or info.get("resourceName") or "").strip()
+                bounds = info.get("bounds")
+                parts = [p for p in (desc, res_id) if p]
+                if bounds:
+                    parts.append(f"bounds={bounds}")
+                if parts:
+                    return " | ".join(parts)
+        except Exception:
+            pass
+        return fallback
+
+    def open_audio_page(self, audio_url):
+        """Step 1: Normalize Audio URL to HTTPS, route to target clone MainActivity/VIEW handler, and verify Audio screen."""
+        self.check_cancelled()
+        normalized_url = self.normalize_audio_url(audio_url)
+        if normalized_url != str(audio_url or "").strip():
+            self.log("info", f"Normalized audio URL to HTTPS: {normalized_url}", step=1)
+
+        self.evidence["intent_result"] = None
+        self.evidence["gallery_selector"] = None
+        self.log("info", f"Opening Instagram audio link in {self.package_name}: {normalized_url}", step=1)
+
+        # APKCloner clones drop VIEW intents routed via UrlHandlerLauncherActivity; targeting
+        # {package}/com.instagram.mainactivity.InstagramMainActivity with -S clears any stale launcher-hidden task
+        # and works cleanly on both official & cloned APKs.
+        primary_cmd = (
+            f'am start -S -n {self.package_name}/com.instagram.mainactivity.InstagramMainActivity '
+            f'-a android.intent.action.VIEW -d "{normalized_url}"'
+        )
+        res = self.d.shell(primary_cmd)
+        exit_code, intent_out = self._parse_shell_result(res)
+
+        if (exit_code not in (0, None)) or re.search(
+            r"(?im)(Activity class .* does not exist|Permission Denial|not exported)",
+            intent_out or "",
+        ):
+            # Only fall back to package-scoped VIEW intent if InstagramMainActivity component is missing/unexported;
+            # NEVER route unscoped or silently fall back to official com.instagram.android.
+            if re.search(
+                r"(?im)(Activity class .* does not exist|Permission Denial|not exported)",
+                intent_out or "",
+            ):
+                self.log(
+                    "warning",
+                    f"Direct InstagramMainActivity route unsupported for {self.package_name}; retrying package-scoped VIEW intent...",
+                    step=1,
+                )
+                fallback_cmd = f'am start -S -a android.intent.action.VIEW -d "{normalized_url}" {self.package_name}'
+                res = self.d.shell(fallback_cmd)
+                exit_code, intent_out = self._parse_shell_result(res)
+
+        self.evidence["intent_result"] = f"exit={exit_code}; output={intent_out or '<empty>'}"
+        self.log("info", f"Audio intent result ({self.package_name}): {self.evidence['intent_result']}", step=1)
+
+        intent_failed = (exit_code is not None and exit_code != 0) or bool(
+            re.search(
+                r"(?im)(^\s*Error:|unable to resolve intent|SecurityException|Activity not started,\s*unable)",
+                intent_out or "",
+            )
+        )
+        if intent_failed:
+            self._get_foreground_app()
+            err_msg = (
+                f"Clone launch/routing failed (Audio intent launch failed) for target package '{self.package_name}'.\n"
+                f"{self._format_evidence()}"
+            )
+            self.log("error", err_msg, step=1)
+            raise RuntimeError(err_msg)
+
+        # Confirm the exact selected clone settled in foreground BEFORE waiting for 'Use audio'
+        self._ensure_target_foreground(step=1, timeout=6.0, context="audio intent launch", settle_from_launcher=True)
+
+        # State Verification 1: Verify audio screen loaded in target clone with 'Use audio' button (fail-fast if bounced)
         self.wait_and_verify_screen(
             "Audio Track Page",
-            lambda: self.d(text="Use audio").exists or self.d(resourceId="com.instagram.android:id/use_in_camera_header_button").exists,
-            timeout=16
+            lambda: self._is_target_in_foreground() and (
+                self._selector_exists(self.d(text="Use audio"))
+                or self._any_id_exists("use_in_camera_header_button")
+            ),
+            timeout=16,
+            require_target_foreground=True,
         )
-        self.log("success", "Audio page verified and ready.", step=1)
+        self.log("success", f"Audio page verified and ready in {self.package_name}.", step=1)
 
     def tap_use_audio(self):
         """Step 2: Click 'Use audio' with human touch biometrics and VERIFY Reel camera screen."""
         self.check_cancelled()
+        self._ensure_target_foreground(step=2, timeout=2.0, context="Use audio step")
         self.log("info", "Tapping 'Use audio' button (Human touch)...", step=2)
-        use_audio_btn = self.d(text="Use audio")
-        if not use_audio_btn.exists:
-            use_audio_btn = self.d(resourceId="com.instagram.android:id/use_in_camera_header_button")
 
+        btn_candidates = [("text='Use audio'", self.d(text="Use audio"))] + [
+            (f"resourceId='{rid}'", self.d(resourceId=rid))
+            for rid in self._id_candidates("use_in_camera_header_button")
+        ]
+        btn_desc, use_audio_btn = self._find_first_selector(btn_candidates)
+        if not use_audio_btn:
+            self._get_foreground_app()
+            err_msg = f"Could not find 'Use audio' button selector.\n{self._format_evidence()}"
+            self.log("error", err_msg, step=2)
+            raise RuntimeError(err_msg)
+
+        self.log("info", f"Clicking 'Use audio' via selector [{btn_desc}]", step=2)
         self.human.click(use_audio_btn)
 
-        # State Verification 2: Verify Reel Camera Screen is loaded
+        # State Verification 2: Verify Reel Camera Screen is loaded in target clone
         self.wait_and_verify_screen(
             "Reel Camera Screen",
-            lambda: self.d(resourceId="com.instagram.android:id/gallery_preview_button").exists or
-                    self.d(description="Gallery").exists or
-                    self.d(resourceId="com.instagram.android:id/camera_shutter_button").exists,
-            timeout=12
+            lambda: self._is_target_in_foreground() and (
+                self._any_id_exists("gallery_preview_button")
+                or self._selector_exists(self.d(description="Gallery"))
+                or self._any_id_exists("camera_shutter_button")
+            ),
+            timeout=12,
         )
         self.log("success", "Reel camera verified.", step=2)
 
-    def open_gallery_and_select_video(self):
-        """Step 3 & 4: Open Gallery, select video with human touch, and VERIFY preview editor."""
+    def _wait_and_select_gallery_video(self, staged_video_path=None, timeout=12.0):
+        """Waits for the staged video/thumbnail in gallery UI and selects it without coordinate fallbacks."""
+        expected_name = os.path.basename(staged_video_path) if staged_video_path else None
+        expected_stem = os.path.splitext(expected_name)[0] if expected_name else None
+        self.evidence["selected_video"] = expected_name or "latest_gallery_video"
+
+        deadline = time.time() + max(1.0, float(timeout))
+        rescan_done = False
+
+        while time.time() < deadline:
+            self.check_cancelled()
+            self._ensure_target_foreground(step=4, timeout=0.0, context="gallery video selection")
+
+            candidates = []
+            if expected_stem:
+                candidates.extend([
+                    (f"descriptionContains='{expected_stem}'", self.d(descriptionContains=expected_stem)),
+                    (f"textContains='{expected_stem}'", self.d(textContains=expected_stem)),
+                ])
+            candidates.append(("descriptionMatches='(?i).*video thumbnail.*'", self.d(descriptionMatches="(?i).*video thumbnail.*")))
+            for rid in self._id_candidates("gallery_grid_item_thumbnail"):
+                candidates.append((f"resourceId='{rid}'", self.d(resourceId=rid)))
+
+            sel_desc, matched_sel = self._find_first_selector(candidates)
+            if matched_sel is not None:
+                item_obj = self._first_element(matched_sel)
+                elem_desc = self._describe_ui_element(item_obj, fallback=sel_desc)
+                self.evidence["gallery_selector"] = sel_desc
+                self.evidence["selected_video"] = (
+                    f"{expected_name} [{elem_desc}]" if expected_name else elem_desc
+                )
+                self.log(
+                    "info",
+                    f"Selecting gallery video via [{sel_desc}] -> {self.evidence['selected_video']}",
+                    step=4,
+                )
+                self.human.click(item_obj)
+                return sel_desc, self.evidence["selected_video"]
+
+            if staged_video_path and not rescan_done and (deadline - time.time()) <= (float(timeout) * 0.6):
+                rescan_done = True
+                self.log("info", f"Waiting for staged video '{expected_name}' in MediaStore; re-triggering scan...", step=4)
+                try:
+                    self.d.shell(
+                        f'am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://{staged_video_path}"'
+                    )
+                except Exception:
+                    pass
+
+            time.sleep(0.4)
+
+        self.evidence["gallery_selector"] = "MISSING(staged/video thumbnail | gallery_grid_item_thumbnail)"
+        self._get_foreground_app()
+        err_msg = (
+            "Could not locate staged video thumbnail selector in Gallery Grid (no coordinate fallback attempted).\n"
+            f"{self._format_evidence()}"
+        )
+        self.log("error", err_msg, step=4)
+        raise RuntimeError(err_msg)
+
+    def open_gallery_and_select_video(self, staged_video_path=None):
+        """Step 3 & 4: Open Gallery via verified selector, select staged video via selector, verify preview editor."""
         self.check_cancelled()
+        target_video_path = staged_video_path or self._staged_video_path
+        if target_video_path:
+            self.evidence["selected_video"] = os.path.basename(target_video_path)
+        self._ensure_target_foreground(step=3, timeout=2.0, context="Gallery open step")
         self.log("info", "Opening Gallery picker...", step=3)
 
-        if self.d(text="REEL").exists:
+        if self._selector_exists(self.d(text="REEL")):
             self.human.click(self.d(text="REEL"))
             self.human.sleep(0.6)
 
-        gallery_btn = self.d(resourceId="com.instagram.android:id/gallery_preview_button")
-        if not gallery_btn.exists:
-            gallery_btn = self.d(description="Gallery")
+        gallery_btn_candidates = [
+            (f"resourceId='{rid}'", self.d(resourceId=rid))
+            for rid in self._id_candidates("gallery_preview_button")
+        ] + [
+            ("description='Gallery'", self.d(description="Gallery")),
+            ("descriptionMatches='(?i)^gallery.*'", self.d(descriptionMatches="(?i)^gallery.*")),
+        ]
 
-        if gallery_btn.exists:
-            self.human.click(gallery_btn)
-        else:
-            h = self.d.info.get("displayHeight", 1600)
-            self.human.click((70, h - 80))
+        gallery_sel_desc, gallery_btn = self._find_first_selector(gallery_btn_candidates)
+        if gallery_btn is None:
+            wait_deadline = time.time() + 2.0
+            while gallery_btn is None and time.time() < wait_deadline:
+                self.check_cancelled()
+                time.sleep(0.4)
+                gallery_sel_desc, gallery_btn = self._find_first_selector(gallery_btn_candidates)
 
-        # State Verification 3: Verify Gallery grid is open
+        if gallery_btn is None:
+            self.evidence["gallery_selector"] = "MISSING(gallery_preview_button | description=Gallery)"
+            self._get_foreground_app()
+            err_msg = (
+                "Gallery button selector not found on Reel camera screen (no coordinate fallback attempted).\n"
+                f"{self._format_evidence()}"
+            )
+            self.log("error", err_msg, step=3)
+            raise RuntimeError(err_msg)
+
+        self.evidence["gallery_selector"] = gallery_sel_desc
+        self.log("info", f"Clicking gallery button via selector [{gallery_sel_desc}]", step=3)
+        self.human.click(gallery_btn)
+
+        # State Verification 3: Verify genuine Gallery grid is open (NO 'New reel' false positive)
         self.wait_and_verify_screen(
             "Gallery Grid",
-            lambda: self.d(descriptionMatches="(?i).*thumbnail.*").exists or
-                    self.d(resourceId="com.instagram.android:id/gallery_grid_item_thumbnail").exists or
-                    self.d(resourceId="com.instagram.android:id/gallery_recycler_view").exists or
-                    self.d(text="New reel").exists,
-            timeout=12
+            self._is_gallery_grid_visible,
+            timeout=12,
         )
         self.log("success", "Gallery grid verified.", step=3)
 
-        # Step 4: Select Video & VERIFY preview editor screen
-        self.log("info", "Selecting latest video from gallery...", step=4)
-        video_thumb = self.d(descriptionMatches="(?i).*video thumbnail.*")
-        if video_thumb.wait(timeout=5):
-            self.human.click(video_thumb[0])
-        else:
-            grid_items = self.d(resourceId="com.instagram.android:id/gallery_grid_item_thumbnail")
-            if grid_items.wait(timeout=3):
-                self.human.click(grid_items[0])
-            else:
-                self.human.click((360, 500))
+        # Step 4: Wait for staged video in gallery, select via selector & VERIFY preview editor screen
+        self.log("info", f"Selecting staged video from gallery ({self.evidence.get('selected_video') or 'latest'})...", step=4)
+        self._wait_and_select_gallery_video(staged_video_path=target_video_path, timeout=12.0)
 
-        # State Verification 4: Verify Video Preview / Editor screen is loaded
+        # State Verification 4: Verify Video Preview / Editor screen is loaded in target clone
         self.wait_and_verify_screen(
             "Video Preview Editor",
-            lambda: self.d(resourceId="com.instagram.android:id/clips_right_action_button").exists or
-                    self.d(text="Next").exists or
-                    self.d(description="Next").exists,
-            timeout=15
+            lambda: self._is_target_in_foreground() and (
+                self._any_id_exists("clips_right_action_button")
+                or self._selector_exists(self.d(text="Next"))
+                or self._selector_exists(self.d(description="Next"))
+            ),
+            timeout=15,
         )
-        self.log("success", "Video loaded in preview editor.", step=4)
+        self.log("success", f"Video loaded in preview editor ({self.evidence.get('selected_video')}).", step=4)
+
+    def _is_share_screen_visible(self):
+        return (
+            self._any_id_exists("share_button")
+            or self._selector_exists(self.d(text="Share"))
+            or self._any_id_exists("caption_input_text_view")
+        )
 
     def proceed_to_share_screen(self):
         """Step 5: Tap 'Next ->' on preview editor and VERIFY 'New reel' share screen."""
         self.check_cancelled()
         self.log("info", "Clicking 'Next' on preview screen...", step=5)
-        next_btn = self.d(resourceId="com.instagram.android:id/clips_right_action_button")
-        if not next_btn.exists:
-            next_btn = self.d(text="Next")
-        if not next_btn.exists:
-            next_btn = self.d(description="Next")
+        for attempt in range(2):
+            self.handle_unexpected_popups()
+            if self._is_share_screen_visible():
+                break
+            next_btn = self._id_selector("clips_right_action_button")
+            if not self._selector_exists(next_btn):
+                next_btn = self.d(text="Next")
+            if not self._selector_exists(next_btn):
+                next_btn = self.d(description="Next")
 
-        self.human.click(next_btn)
+            self.human.click(next_btn)
+
+            for _ in range(5):
+                time.sleep(0.5)
+                if self._is_share_screen_visible():
+                    break
+                curr_pkg, _ = self._get_foreground_app()
+                if curr_pkg == "com.android.vending":
+                    self.log("info", "Self-healing: Dismissed Play Store promo overlay via Back.", step=5)
+                    self.d.press("back")
+                    self.human.sleep(0.8)
+                    break
+
+            if self._is_share_screen_visible():
+                break
+            if attempt == 0 and self._any_id_exists("clips_right_action_button"):
+                self.log("info", "Returned to Preview Editor after promo dismissal; tapping 'Next' again...", step=5)
+                continue
+            break
 
         # State Verification 5: Verify 'New reel' Share/Details screen is loaded
         self.wait_and_verify_screen(
             "New Reel Share Screen",
-            lambda: self.d(resourceId="com.instagram.android:id/share_button").exists or
-                    self.d(text="Share").exists or
-                    self.d(resourceId="com.instagram.android:id/caption_input_text_view").exists,
-            timeout=14
+            self._is_share_screen_visible,
+            timeout=14,
+            require_target_foreground=True,
         )
+        # Clear any bottom sheet covering Share Screen (e.g., "New ways to reuse" -> OK)
+        self.handle_unexpected_popups()
         self.log("success", "Share screen verified.", step=5)
 
     def write_caption(self, caption_text):
         """Step 6: Enter caption, reliably force-hide soft keyboard, and verify screen state."""
         self.check_cancelled()
+        self.handle_unexpected_popups()
         if not caption_text:
             self.log("info", "No caption provided, skipping.", step=6)
             return
 
         self.log("info", f"Entering caption ({len(caption_text)} chars)...", step=6)
-        caption_box = self.d(resourceId="com.instagram.android:id/caption_input_text_view")
+        caption_box = self._id_selector("caption_input_text_view")
         if not caption_box.exists:
             caption_box = self.d(textMatches="(?i)Write a caption.*")
 
@@ -302,10 +694,11 @@ class InstagramReelUploader:
             # State Verification 6: Verify Share screen active and caption filled
             self.wait_and_verify_screen(
                 "Share Screen (Caption Entered)",
-                lambda: self.d(resourceId="com.instagram.android:id/share_button").exists or
+                lambda: self._any_id_exists("share_button") or
                         self.d(text="Share").exists or
-                        self.d(resourceId="com.instagram.android:id/caption_input_text_view").exists,
-                timeout=10
+                        self._any_id_exists("caption_input_text_view"),
+                timeout=10,
+                require_target_foreground=True,
             )
             self.log("success", "Caption entered and keyboard dismissed.", step=6)
         else:
@@ -363,7 +756,7 @@ class InstagramReelUploader:
                 bottom = row.info["bounds"]["bottom"]
                 y_center = (top + bottom) // 2
 
-                toggles = self.d(resourceId="com.instagram.android:id/toggle")
+                toggles = self._id_selector("toggle")
                 matched_toggle = None
                 for t in toggles:
                     tb = t.info["bounds"]
@@ -388,7 +781,7 @@ class InstagramReelUploader:
 
         # Press back to return to Share screen and VERIFY
         self.log("info", "Returning to Share screen...")
-        back_btn = self.d(resourceId="com.instagram.android:id/action_bar_button_back")
+        back_btn = self._id_selector("action_bar_button_back")
         if back_btn.exists:
             self.human.click(back_btn)
         else:
@@ -397,18 +790,20 @@ class InstagramReelUploader:
         # State Verification 8: Verify successfully returned to Share screen
         self.wait_and_verify_screen(
             "Returned to Share Screen",
-            lambda: self.d(resourceId="com.instagram.android:id/share_button").exists or
+            lambda: self._any_id_exists("share_button") or
                     self.d(text="Share").exists or
-                    self.d(resourceId="com.instagram.android:id/caption_input_text_view").exists,
-            timeout=10
+                    self._any_id_exists("caption_input_text_view"),
+            timeout=10,
+            require_target_foreground=True,
         )
         self.log("success", "Toggles configured and confirmed.", step=8)
 
     def share_reel(self):
         """Step 9: Click Share and VERIFY share screen is dismissed (upload commenced)."""
         self.check_cancelled()
+        self.handle_unexpected_popups()
         self.log("info", "Tapping 'Share' button (Human touch)...", step=9)
-        share_btn = self.d(resourceId="com.instagram.android:id/share_button")
+        share_btn = self._id_selector("share_button")
         if not share_btn.exists:
             share_btn = self.d(text="Share")
 
@@ -416,7 +811,7 @@ class InstagramReelUploader:
         if not share_btn.exists:
             self.human.scroll_down(stride_ratio=0.35)
             self.human.sleep(0.5)
-            share_btn = self.d(resourceId="com.instagram.android:id/share_button")
+            share_btn = self._id_selector("share_button")
             if not share_btn.exists:
                 share_btn = self.d(text="Share")
 
@@ -428,8 +823,9 @@ class InstagramReelUploader:
         # State Verification 9: Verify Share screen is dismissed
         self.wait_and_verify_screen(
             "Share Screen Dismissed (Upload Started)",
-            lambda: not self.d(resourceId="com.instagram.android:id/share_button").exists,
-            timeout=12
+            lambda: not self._any_id_exists("share_button"),
+            timeout=12,
+            require_target_foreground=True,
         )
         self.log("success", "Reel submitted for upload!", step=9)
 
@@ -439,10 +835,10 @@ class InstagramReelUploader:
 
         # 1. Close audio/modal activities until feed_tab is visible
         for attempt in range(6):
-            if self.d(resourceId="com.instagram.android:id/feed_tab").exists or self.d(description="Home").exists:
+            if self._any_id_exists("feed_tab") or self.d(description="Home").exists:
                 break
             
-            back_btn = self.d(resourceId="com.instagram.android:id/action_bar_button_back")
+            back_btn = self._id_selector("action_bar_button_back")
             if not back_btn.exists:
                 back_btn = self.d(description="Back")
             
@@ -453,7 +849,7 @@ class InstagramReelUploader:
             self.human.sleep(0.8)
 
         # 2. Tap Home tab icon (double-tap to scroll to top)
-        home_tab = self.d(resourceId="com.instagram.android:id/feed_tab")
+        home_tab = self._id_selector("feed_tab")
         if not home_tab.exists:
             home_tab = self.d(description="Home")
 
@@ -465,7 +861,7 @@ class InstagramReelUploader:
         # State Verification 10: Verify on Home feed
         self.wait_and_verify_screen(
             "Instagram Home Feed (Top)",
-            lambda: self.d(resourceId="com.instagram.android:id/feed_tab").exists or
+            lambda: self._any_id_exists("feed_tab") or
                     self.d(description="Home").exists or
                     self.d(descriptionMatches=r"(?i).*'s story.*").exists,
             timeout=12
@@ -580,9 +976,9 @@ class InstagramReelUploader:
         self.human.sleep(2.0)
 
         # In full screen Reel viewer, tap Share icon (direct_share_button or button_share)
-        fullscreen_share = self.d(resourceId="com.instagram.android:id/direct_share_button")
+        fullscreen_share = self._id_selector("direct_share_button")
         if not fullscreen_share.exists:
-            fullscreen_share = self.d(resourceId="com.instagram.android:id/button_share")
+            fullscreen_share = self._id_selector("button_share")
         if not fullscreen_share.exists:
             fullscreen_share = self.d(descriptionMatches="(?i).*(share|send).*")
 
@@ -597,9 +993,9 @@ class InstagramReelUploader:
             self.human.sleep(0.8)
 
         # Check if direct share button on feed card is visible
-        share_post_btn = self.d(resourceId="com.instagram.android:id/row_feed_button_share")
+        share_post_btn = self._id_selector("row_feed_button_share")
         if not share_post_btn.exists:
-            share_post_btn = self.d(resourceId="com.instagram.android:id/direct_share_button")
+            share_post_btn = self._id_selector("direct_share_button")
 
         if share_post_btn.exists:
             self.log("info", "Tapping Share button on Home feed reel card...", step=11)
@@ -616,7 +1012,7 @@ class InstagramReelUploader:
         self.d.press("back")
         self.human.sleep(0.8)
 
-        profile_tab = self.d(resourceId="com.instagram.android:id/profile_tab")
+        profile_tab = self._id_selector("profile_tab")
         if not profile_tab.exists:
             profile_tab = self.d(description="Profile")
 
@@ -631,7 +1027,7 @@ class InstagramReelUploader:
                 self.human.sleep(1.2)
 
             # Find video thumbnails
-            thumbs = self.d(resourceId="com.instagram.android:id/preview_clip_thumbnail")
+            thumbs = self._id_selector("preview_clip_thumbnail")
             if thumbs.wait(timeout=5):
                 has_drafts = self.d(text="Drafts").exists
                 target_idx = 1 if (has_drafts and thumbs.count > 1) else 0
@@ -654,8 +1050,9 @@ class InstagramReelUploader:
                          hide_likes=True, hide_shares=True):
         """Runs the entire Instagram Reel post automation workflow with full human simulation & state verification."""
         try:
+            staged_video_path = None
             if video_path:
-                self.push_video_to_device(local_video_path=video_path)
+                staged_video_path = self.push_video_to_device(local_video_path=video_path)
 
             # Step 1: Open Audio page & verify
             self.open_audio_page(audio_url)
@@ -663,8 +1060,8 @@ class InstagramReelUploader:
             # Step 2: Click 'Use audio' & verify Reel camera opened
             self.tap_use_audio()
 
-            # Step 3 & 4: Open gallery, verify picker, select video & verify preview editor
-            self.open_gallery_and_select_video()
+            # Step 3 & 4: Open gallery, verify picker, select staged video & verify preview editor
+            self.open_gallery_and_select_video(staged_video_path=staged_video_path)
 
             # Step 5: Click Next & verify Share details screen
             self.proceed_to_share_screen()
