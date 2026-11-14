@@ -607,3 +607,143 @@
 - **Verification & Outcome**:
   - Focused test: `python -m unittest tests.test_full_suite.TestReelRunnerFixes.test_audio_intent_failure_saved_and_staged_single_to_multi_e2e` -> **PASSED in 2.330s**.
   - Full suite: `python -m unittest tests/test_full_suite.py` -> **74/74 tests passed in 15.637s (0 failures, 0 errors)**.
+
+### [2026-11-13 23:43:00] Safety-First Migration: Phase 0 & Phase 1 Package Boundaries Setup
+- **User Request**: "You own Phase 0 (Baseline Inventory) and Phase 1 (Package Boundaries Setup) of plan/2026-11-13_safety-first-project-structure-migration.md."
+- **Context & Problem**: As part of transitioning to a clean modular architecture (separating backend, automation, and frontend layers), initial package boundaries need to be created without moving or modifying existing root files, preserving database files (`data/instoper.db`), media uploads, and existing behavior.
+- **Action Taken & Changes**:
+  - Verified git status is clean on branch `main`.
+  - Created package directories and empty package initializers:
+    - `backend/__init__.py`
+    - `backend/storage/__init__.py`
+    - `backend/services/__init__.py`
+    - `backend/routes/__init__.py`
+    - `automation/__init__.py`
+    - `automation/instagram/__init__.py`
+    - `automation/android/__init__.py`
+    - `automation/interaction/__init__.py`
+    - `automation/observability/__init__.py`
+    - `frontend/__init__.py`
+  - Preserved all root files (`app.py`, `adb.py`, `db.py`, `vault.py`, `human_behavior.py`, `screen_recorder.py`, etc.) and data directories untouched.
+- **Technical Mechanism**: Establishing standard Python packages via `__init__.py` initializers creates the skeleton namespace for subsequent phased migrations without breaking any existing imports or execution paths.
+- **Verification & Outcome**:
+  - `python -m unittest tests/test_full_suite.py`: Ran 74 tests in 14.749s, all 74 passed cleanly with 0 failures and 0 errors.
+
+
+### [2026-11-13 23:49:00] Safety-First Migration: Phase 2 Persistence & Security Modules Migration
+- **User Request**: "You own Phase 2 of plan/2026-11-13_safety-first-project-structure-migration.md. Move persistence and security modules to backend/storage, create backwards-compatible shims, and verify test suite."
+- **Context & Problem**: Phase 2 of the safety-first architectural refactor requires moving persistence (`db.py`) and security/vault (`vault.py`) into `backend/storage/` while preserving full backwards compatibility, maintaining all existing database paths (`data/instoper.db`), and ensuring mocking/patching in tests functions transparently.
+- **Action Taken & Changes**:
+  - `backend/storage/vault.py`: Placed full implementation of DPAPI protection, AES-256-GCM encrypted backup/restore, and proxy parsing/redaction.
+  - `backend/storage/db.py`: Placed full implementation of SQLite persistence, taxonomy CRUD, accounts, campaigns, tasks, and audit logs. Configured `DEFAULT_DB_PATH` to resolve via `os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "instoper.db"))` preserving repo-root `data/instoper.db`. Updated vault import with package-aware fallback.
+  - `backend/storage/__init__.py`: Exposed `db` and `vault` packages and symbols.
+  - `vault.py`: Converted root file into backwards-compatible shim forwarding to `backend.storage.vault` and aliasing `sys.modules[__name__] = vault`.
+  - `db.py`: Converted root file into backwards-compatible shim forwarding all attributes to `backend.storage.db` and aliasing `sys.modules[__name__] = db` to support direct patching and attribute access.
+- **Technical Mechanism**: By aliasing `sys.modules["db"]` and `sys.modules["vault"]` to the underlying `backend.storage` modules, root-level module lookups and unittest `patch("db.DEFAULT_DB_PATH", ...)` patches seamlessly manipulate the singleton module instance in `backend/storage/db.py` without desynchronization.
+- **Verification & Outcome**:
+  - Verified `DEFAULT_DB_PATH` accurately resolves to `E:\Download\Code\Platfrom-tool\data\instoper.db`.
+  - `python -m unittest tests/test_full_suite.py`: Ran 74 tests in 13.193s, all 74 passed cleanly with 0 failures, 0 errors.
+
+### [2026-11-14 00:00:00] Safety-First Migration: Phase 3 Automation Modules Migration
+- **User Request**: "You own Phase 3 of plan/2026-11-13_safety-first-project-structure-migration.md. Place implementations into structured automation subpackages, ensure CLI/imports resolve cleanly, convert root files to forwarding shims with sys.modules[__name__] = target_module, expose packages, and verify full test suite."
+- **Context & Problem**: Phase 3 of the structural migration organizes all device interaction, Instagram automation, and observability code into structured packages (`automation/interaction`, `automation/instagram`, `automation/android`, `automation/observability`) while preserving full backwards compatibility for root-level CLI invocations (`python adb.py --help`), unittests, and runtime callers.
+- **Action Taken & Changes**:
+  - `automation/interaction/human_behavior.py`: Placed full implementation of `HumanBehaviorEngine` (Bézier trajectories, Gaussian coordinate jitter, dwell times, and 10x typing cadence).
+  - `automation/instagram/reel_workflow.py`: Placed full implementation of `InstagramReelUploader` from `adb.py`. Added repository root resolution to `sys.path` and explicit `main()` entry point for standalone CLI execution.
+  - `automation/instagram/login_flow.py`: Placed full implementation of `InstagramAccountLoginService`, `BatchLoginManager`, and `LoginResult`. Updated imports to reference `backend.storage.db`, `backend.storage.vault`, `automation.android.package_scanner`, and `automation.interaction.human_behavior`.
+  - `automation/android/package_scanner.py`: Placed full implementation of package scanning, APK installation, and clone discovery.
+  - `automation/android/profile_capture.py`: Placed full implementation of profile inspection and screen verification.
+  - `automation/observability/screen_recorder.py`: Placed full implementation of `TaskScreenRecorder` and `cleanup_expired_recordings`.
+  - Converted root files into backwards-compatible forwarding shims with `sys.modules[__name__] = target_module`:
+    - `human_behavior.py` -> `automation.interaction.human_behavior`
+    - `adb.py` -> `automation.instagram.reel_workflow` (with `if __name__ == '__main__': reel_workflow.main()`)
+    - `login_flow.py` -> `automation.instagram.login_flow`
+    - `package_scanner.py` -> `automation.android.package_scanner`
+    - `profile_capture.py` -> `automation.android.profile_capture`
+    - `screen_recorder.py` -> `automation.observability.screen_recorder`
+  - Exposed modules cleanly in `automation/__init__.py`, `automation/interaction/__init__.py`, `automation/instagram/__init__.py`, `automation/android/__init__.py`, and `automation/observability/__init__.py`.
+- **Technical Mechanism**: Each root-level shim module forwards exports (`from <target> import *`) and replaces its entry in `sys.modules` (`sys.modules[__name__] = target_module`). This guarantees that unittest patches targeting root modules (e.g., `patch("login_flow.InstagramAccountLoginService")` or `patch("package_scanner.run_adb_command")`) apply directly to the canonical classes and functions inside the new package structure without monkey-patch desynchronization.
+- **Verification & Outcome**:
+  - Direct import verification: `import human_behavior, adb, login_flow, package_scanner, profile_capture, screen_recorder` and structured subpackages all succeeded.
+  - CLI verification: Both `python adb.py --help` and `python automation/instagram/reel_workflow.py --help` execute and display argument parser cleanly.
+  - Test suite: `python -m unittest tests/test_full_suite.py` executed: **74/74 tests passed** in 13.533s with 0 failures, 0 errors.
+
+### [2026-11-14 14:15:00] Safety-First Migration: Phase 6 Documentation & Plan Organization
+- **User Request**: "You own Phase 6 (Documentation & Plan Organization) of plan/2026-11-13_safety-first-project-structure-migration.md. Create docs/ and docs/plans/, organize plans and documentation keeping root copies or clean redirects where appropriate, verify links, and report."
+- **Context & Problem**: Phase 6 of the safety-first architectural refactor requires centralizing all architectural plans and technical documentation into a clean `docs/` hierarchy without breaking any direct links in root files, workspace instructions (`GEMINI.md`), or mandatory continuous memory logging (`PROJECT_MEMORY.md`).
+- **Action Taken & Changes**:
+  - `docs/plans/`: Created directory and copied all 11 implementation plans (`2026-11-08_*.md`, `2026-11-12_*.md`, `2026-11-13_*.md`) from `plan/`.
+  - `docs/plans/README.md`: Created chronological and categorized index of all platform architectural and module plans.
+  - `plan/README.md`: Added pointer note directing developers to `docs/plans/` while preserving root `plan/*.md` for zero-risk backward compatibility.
+  - `docs/README.md`: Authored comprehensive technical documentation overview covering package layout, anti-bot biometric models, execution guides, and direct links to PRD and plans.
+  - `docs/PRD.md`: Placed canonical PRD copy with updated Section 7 project file structure representing the modular package layout.
+  - `docs/ANTIGRAVITY_REVIEW_NOTES.md`: Placed canonical review notes checklist under `docs/`.
+  - `PRD.md`: Kept root copy intact for backwards compatibility and added canonical redirect notice header pointing to `docs/PRD.md`.
+  - `ANTIGRAVITY_REVIEW_NOTES.md`: Kept root copy intact and added canonical redirect notice header pointing to `docs/ANTIGRAVITY_REVIEW_NOTES.md`.
+  - `README.md`: Kept root quickstart guide and added "Documentation & Architecture" directory section linking to `docs/`.
+  - Guardrails observed: `requirements.txt`, `start_gui.bat`, `.gitignore`, `GEMINI.md`, `PROJECT_MEMORY.md`, `data/`, `uploads/`, and all source code remained strictly in their designated root locations.
+- **Technical Mechanism**: By providing an organized `docs/` hierarchy with an indexed `docs/plans/README.md` while maintaining root copies with Markdown alert banners (`> [!NOTE]`), existing IDE links, GitHub landing pages, and agent instruction hooks remain 100% functional without link breakage or confusion.
+- **Verification & Outcome**:
+  - Executed link audit tool (`audit_links.py`) traversing all repository markdown files: verified 68 total links and 37 local file links; 0 broken links discovered (100% valid targets).
+  - Preserved root files and data paths intact (`git status` confirms zero code or runtime data regressions).
+
+
+### [2026-11-14 14:38:00] Migration Phase 4 & Phase 5: Frontend Assets, Services & Route Layer Blueprints
+- **User Request**: "Execute Phase 4 (Services & Routes) and Phase 5 (Frontend Assets) of the Safety-First Project Structure Migration Plan."
+- **Context & Problem**: The project structure needed clear `frontend/`, `backend/services/`, and `backend/routes/` separation while preserving 100% backwards compatibility for app startup, API endpoints, mock-patching, and test assertions.
+- **Action Taken & Changes**:
+  - `frontend/templates/index.html`: Copied root `templates/index.html` to target path while leaving root `templates/index.html` intact for zero-risk fallback.
+  - `app.py`: Configured Flask with `template_folder` prioritizing `frontend/templates` with fallback to `templates`.
+  - `backend/services/excel_manager.py`: Placed full Excel metadata import/export implementation in `backend/services/excel_manager.py`.
+  - `excel_manager.py`: Converted root `excel_manager.py` into backwards-compatible forwarding shim with `sys.modules[__name__] = excel_manager`.
+  - `backend/config.py`: Created shared constants and catalog configuration (`BUILTIN_AUTOMATION_ID = "reel_upload_with_music"`, `AUTOMATION_CATALOG`, upload limits, extensions, MIME map).
+  - `backend/services/`: Created domain service modules:
+    - `backend/services/accounts.py`: Taxonomy payload parsing, target resolution, account serialization.
+    - `backend/services/campaigns.py`: Audio URL normalization and preflight validation engine.
+    - `backend/services/tasks.py`: Task failure screenshot capture, task recording finalization helper.
+    - `backend/services/__init__.py`: Exposed `accounts`, `campaigns`, `tasks`, and `excel_manager`.
+  - `backend/routes/`: Created Flask Blueprints by domain:
+    - `backend/routes/dashboard.py` (`dashboard_bp`): Index, real-time MJPEG stream, tap, and key injection.
+    - `backend/routes/devices.py` (`devices_bp`): Connected device inventory and status endpoints.
+    - `backend/routes/content.py` (`content_bp`): Content Library collection, uploads, item patch/delete, and media file streaming.
+    - `backend/routes/accounts.py` (`accounts_bp`): Accounts CRUD, taxonomy categories/tags, vault credentials, onboarding flows, and batch login.
+    - `backend/routes/automations.py` (`automations_bp`): Catalog, start/stop workflow, status, and SSE logs.
+    - `backend/routes/campaigns.py` (`campaigns_bp`): Campaign CRUD, preflight checks, run execution, and exports.
+    - `backend/routes/tasks.py` (`tasks_bp`): Task inspection, failure screenshots, recordings, and retries.
+    - `backend/routes/imports_exports.py` (`imports_exports_bp`): Excel import/export/preview, APK install on device, clone confirmation, and encrypted secret packages.
+    - `backend/routes/__init__.py`: Exported all blueprints.
+  - `app.py`: Registered all domain blueprints while maintaining all top-level compatibility exports and delegating helper functions (`_parse_account_taxonomy_payload`, `_run_campaign_preflight`, `_finalize_task_recording`).
+- **Technical Mechanism**: Flask Blueprints modularize URL route registration and domain grouping without changing public route paths, HTTP verbs, or payload structures. Forwarding shims and delegated lookups guarantee that test mocks targeting `app_module` (such as `_get_content_upload_dir`, `MAX_APK_SIZE`, `campaign_cancel_event`) dynamically take effect during test execution.
+- **Verification & Outcome**:
+  - Python compile check: All `backend/` modules, `app.py`, and `excel_manager.py` compiled cleanly.
+  - Template rendering check: Verified GET `/` renders 561KB `index.html` from `frontend/templates/`.
+  - Unit test suite: Ran `python -m unittest tests/test_full_suite.py` twice consecutively; all 74 tests passed cleanly with 0 failures and 0 errors in both runs (100% OK).
+
+---
+
+### [2026-11-14 14:41:00] Migration Verification & Safety Audit Complete
+- **User Request**: "You are the verification and safety guardian for the structure migration. Verify all new and shim imports, runtime data safety, Flask template rendering, and full test suite (74 tests)."
+- **Context & Problem**: Following the completion of Phases 0 through 6 (scaffolding, storage, automation, services/routes, frontend assets, and documentation organization), an independent verification audit was required to guarantee 100% backward compatibility, zero runtime data regression, and test suite integrity.
+- **Action Taken & Changes**:
+  - Validated all 8 module and shim import pairs:
+    - `backend.storage.db` <-> `db`
+    - `backend.storage.vault` <-> `vault`
+    - `backend.services.excel_manager` <-> `excel_manager`
+    - `automation.instagram.reel_workflow` <-> `adb`
+    - `automation.interaction.human_behavior` <-> `human_behavior`
+    - `automation.android.package_scanner` <-> `package_scanner`
+    - `automation.android.profile_capture` <-> `profile_capture`
+    - `automation.observability.screen_recorder` <-> `screen_recorder`
+  - Validated runtime database safety on `data/instoper.db`:
+    - File verified intact (864,256 bytes).
+    - `PRAGMA integrity_check` verified: `ok`.
+    - Verified all 17 tables preserved, including `accounts` (19 rows), `campaigns` (7 rows), `tasks` (74 rows), and `schema_migrations` (6 rows).
+  - Validated Flask template rendering with `frontend/templates/index.html`:
+    - Verified `app.template_folder` points to `frontend/templates`.
+    - Verified Jinja template resolution resolves directly to `frontend/templates/index.html`.
+    - Tested `GET /`: returns HTTP 200 OK, 561,909 bytes rendered payload with valid HTML and correct document title (`Instagram Reel Automation Studio`).
+  - Ran full test suite:
+    - `python -m unittest tests/test_full_suite.py`: 74 tests executed in 44.286s, 0 failures, 0 errors (100% OK).
+- **Technical Mechanism**: All legacy root modules preserve exact symbol tables and test-patching hooks through `sys.modules[__name__] = target_module` forwarding shims. Dynamic path resolution across storage and frontend packages ensures zero operational disruption to database connections or Jinja rendering.
+- **Verification & Outcome**:
+  - All 4 verification objectives passed with zero warnings, zero failures, zero errors, and zero data loss.

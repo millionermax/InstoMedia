@@ -1,5 +1,9 @@
 # Antigravity review notes
 
+> [!NOTE]
+> **Canonical Location:** These review notes have been organized into the central documentation directory at [`docs/ANTIGRAVITY_REVIEW_NOTES.md`](docs/ANTIGRAVITY_REVIEW_NOTES.md).
+> This root copy is retained for backwards compatibility.
+
 Please address these before marking the clone APK install work complete:
 
 1. **Do not update an installed app implicitly.** `package_scanner.install_apk_on_device()` currently runs `adb install -r`. The `-r` option permits replacing/reinstalling an existing package. Use plain `adb install` by default, or add an explicit update choice with a clear confirmation. Do not uninstall existing app data automatically. Add a test for an APK whose package is already installed. This is still outstanding in the current code review.

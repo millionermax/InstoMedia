@@ -1,7 +1,10 @@
 import os
 import sys
 import time
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger("instoper.app")
 import json
 import queue
 import io
@@ -23,6 +26,21 @@ import excel_manager
 import login_flow
 import profile_capture
 import screen_recorder
+from backend.services import (
+    accounts as accounts_service,
+    campaigns as campaigns_service,
+    tasks as tasks_service,
+)
+from backend.routes import (
+    dashboard_bp,
+    devices_bp,
+    content_bp,
+    accounts_bp,
+    automations_bp,
+    campaigns_bp,
+    tasks_bp,
+    imports_exports_bp,
+)
 
 import mimetypes
 import uuid
@@ -49,9 +67,26 @@ _CONTENT_MIME_MAP = {
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(os.path.join(UPLOAD_FOLDER, "content"), exist_ok=True)
 
-app = Flask(__name__)
+_frontend_templates = os.path.join(BASE_DIR, "frontend", "templates")
+_root_templates = os.path.join(BASE_DIR, "templates")
+_template_folder = _frontend_templates if os.path.isdir(_frontend_templates) else _root_templates
+
+app = Flask(__name__, template_folder=_template_folder)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB max
+
+for _bp in (
+    dashboard_bp,
+    devices_bp,
+    content_bp,
+    accounts_bp,
+    automations_bp,
+    campaigns_bp,
+    tasks_bp,
+    imports_exports_bp,
+):
+    if _bp.name not in app.blueprints:
+        app.register_blueprint(_bp)
 
 db.init_db(recover_in_flight=True)
 try:
@@ -358,33 +393,7 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/api/devices", methods=["GET"])
-def list_devices_api():
-    """Returns connected ADB devices with serial, status, product_name, and selectability."""
-    devices = package_scanner.list_connected_devices()
-    return jsonify({"status": "ok", "devices": devices})
-
-
-@app.route("/api/device")
-def get_device_info():
-    d = get_u2_device()
-    if d is None:
-        return jsonify({"connected": False, "name": "Disconnected", "serial": None})
-    try:
-        info = d.info
-        name = info.get("productName", "Android Device")
-        serial = d.serial
-        w = info.get("displayWidth", 720)
-        h = info.get("displayHeight", 1600)
-        return jsonify({
-            "connected": True,
-            "name": name,
-            "serial": serial,
-            "width": w,
-            "height": h
-        })
-    except Exception as e:
-        return jsonify({"connected": False, "name": "Error", "error": str(e)})
+from backend.routes.devices import list_devices_api, get_device_info
 
 
 @app.route("/api/stream")
@@ -471,36 +480,13 @@ def _validate_instagram_audio_url(raw_url: str, require_nonempty: bool = False) 
 
 
 def _resolve_automation_account_target(account_id_raw, explicit_device_serial=None, explicit_package_name=None):
-    if account_id_raw is None or isinstance(account_id_raw, bool) or str(account_id_raw).strip() == "":
-        raise ValueError("An onboarded account must be selected for this automation.")
-    try:
-        account_id = int(account_id_raw)
-    except (TypeError, ValueError):
-        raise ValueError("Invalid account_id.")
-
-    acc = db.get_account_by_id(account_id)
-    if not acc:
-        raise LookupError(f"Account #{account_id} not found.")
-
-    bound_serial = (acc.get("device_serial") or "").strip()
-    bound_pkg = (acc.get("package_name") or "").strip()
-    if not bound_serial or not bound_pkg:
-        raise ValueError(
-            f"Account @{acc['username']} is missing a device or confirmed clone package binding. Update it in Accounts first."
-        )
-
-    if explicit_device_serial and str(explicit_device_serial).strip() != bound_serial:
-        raise ValueError("Supplied device_serial does not match the selected account's bound device.")
-    if explicit_package_name and str(explicit_package_name).strip() != bound_pkg:
-        raise ValueError("Supplied package_name does not match the selected account's bound clone package.")
-
-    package_scanner.validate_confirmed_package(device_serial=bound_serial, package_name=bound_pkg)
-    return {
-        "account_id": acc["id"],
-        "account_username": acc["username"],
-        "device_serial": bound_serial,
-        "package_name": bound_pkg,
-    }
+    return accounts_service.resolve_automation_account_target(
+        account_id_raw=account_id_raw,
+        explicit_device_serial=explicit_device_serial,
+        explicit_package_name=explicit_package_name,
+        db_module=db,
+        scanner_module=package_scanner,
+    )
 
 
 def run_workflow_async(audio_url, video_path, caption, hide_likes, hide_shares, device_serial=None, package_name=None):
@@ -704,38 +690,7 @@ batch_login_manager = login_flow.BatchLoginManager(log_callback=log_listener)
 
 def _parse_account_taxonomy_payload(data):
     """Extracts and validates optional category_id and tag_ids from account API JSON."""
-    category_id = db._UNSET
-    if "category_id" in data:
-        raw_cat = data.get("category_id")
-        if raw_cat in (None, ""):
-            category_id = None
-        elif isinstance(raw_cat, bool):
-            raise ValueError("Invalid category_id.")
-        else:
-            try:
-                category_id = int(raw_cat)
-            except (TypeError, ValueError):
-                raise ValueError("Invalid category_id.")
-
-    tag_ids = db._UNSET
-    if "tag_ids" in data:
-        raw_tags = data.get("tag_ids")
-        if raw_tags is None:
-            tag_ids = []
-        elif not isinstance(raw_tags, list):
-            raise ValueError("tag_ids must be a list.")
-        else:
-            parsed = []
-            for item in raw_tags:
-                if isinstance(item, bool):
-                    raise ValueError("Invalid tag ID in tag_ids.")
-                try:
-                    parsed.append(int(item))
-                except (TypeError, ValueError):
-                    raise ValueError("Invalid tag ID in tag_ids.")
-            tag_ids = parsed
-
-    return category_id, tag_ids
+    return accounts_service.parse_account_taxonomy_payload(data)
 
 
 @app.route("/api/accounts", methods=["GET"])
@@ -1639,135 +1594,15 @@ def content_item_api(content_id):
 # ---------------------------------------------------------------------------
 def _run_campaign_preflight(campaign: dict, target_subset=None, include_lock_check: bool = True) -> dict:
     """Validates audio URL, workflow lock, and every target's device/package/video readiness."""
-    blockers = []
-    target_checks = []
-    targets = target_subset if target_subset is not None else (campaign.get("targets") or [])
-
-    if campaign.get("automation_id") != BUILTIN_AUTOMATION_ID:
-        blockers.append({
-            "scope": "campaign",
-            "code": "unsupported_automation",
-            "message": f"Unsupported automation '{campaign.get('automation_id')}'.",
-        })
-
-    try:
-        db.validate_instagram_audio_url(campaign.get("audio_url", ""), require_nonempty=True)
-    except ValueError as e:
-        blockers.append({"scope": "campaign", "code": "invalid_audio_url", "message": str(e)})
-
-    lock_msg = _is_any_workflow_active() if include_lock_check else None
-    if lock_msg:
-        blockers.append({"scope": "campaign", "code": "workflow_locked", "message": lock_msg})
-
-    if not targets:
-        blockers.append({"scope": "campaign", "code": "no_targets", "message": "Campaign has no targets to execute."})
-
-    try:
-        connected_devices = package_scanner.list_connected_devices()
-    except Exception:
-        connected_devices = []
-    online_serials = {d.get("serial") for d in connected_devices if d.get("status") == "device"}
-
-    for idx, tgt in enumerate(targets, start=1):
-        acc_id = tgt.get("account_id")
-        content_id = tgt.get("content_id")
-        acc = db.get_account_by_id(acc_id) if acc_id else None
-        username = (acc or {}).get("username") or tgt.get("account_username") or f"account#{acc_id}"
-        tgt_blockers = []
-
-        serial = ((acc or {}).get("device_serial") or "").strip()
-        pkg = ((acc or {}).get("package_name") or "").strip()
-
-        if not acc:
-            tgt_blockers.append({
-                "scope": "target",
-                "position": idx,
-                "account_id": acc_id,
-                "account_username": username,
-                "code": "account_not_found",
-                "message": f"Target #{idx}: account #{acc_id} no longer exists.",
-            })
-        elif not serial or not pkg:
-            tgt_blockers.append({
-                "scope": "target",
-                "position": idx,
-                "account_id": acc_id,
-                "account_username": username,
-                "code": "missing_device_binding",
-                "message": f"@{username}: missing bound device serial or confirmed clone package.",
-            })
-        elif serial not in online_serials:
-            tgt_blockers.append({
-                "scope": "target",
-                "position": idx,
-                "account_id": acc_id,
-                "account_username": username,
-                "code": "device_offline",
-                "message": f"@{username}: device '{serial}' is offline or not connected.",
-            })
-        else:
-            try:
-                package_scanner.validate_confirmed_package(device_serial=serial, package_name=pkg)
-            except package_scanner.OnboardingValidationError as e:
-                tgt_blockers.append({
-                    "scope": "target",
-                    "position": idx,
-                    "account_id": acc_id,
-                    "account_username": username,
-                    "code": e.code,
-                    "message": f"@{username}: {e.message}",
-                })
-
-        citem = db.get_content_item(content_id) if content_id else None
-        if not citem:
-            tgt_blockers.append({
-                "scope": "target",
-                "position": idx,
-                "account_id": acc_id,
-                "account_username": username,
-                "code": "content_not_found",
-                "message": f"@{username}: assigned video content #{content_id} was not found.",
-            })
-        elif citem.get("media_type") != "video":
-            tgt_blockers.append({
-                "scope": "target",
-                "position": idx,
-                "account_id": acc_id,
-                "account_username": username,
-                "code": "content_not_video",
-                "message": f"@{username}: assigned content '{citem.get('original_filename')}' is not a video.",
-            })
-        else:
-            fpath = _resolve_content_filepath(citem.get("storage_key", ""))
-            if not fpath or not os.path.isfile(fpath):
-                tgt_blockers.append({
-                    "scope": "target",
-                    "position": idx,
-                    "account_id": acc_id,
-                    "account_username": username,
-                    "code": "content_file_missing",
-                    "message": f"@{username}: video file '{citem.get('original_filename')}' (#{content_id}) is missing on server.",
-                })
-
-        blockers.extend(tgt_blockers)
-        target_checks.append({
-            "position": idx,
-            "account_id": acc_id,
-            "account_username": username,
-            "device_serial": serial or None,
-            "package_name": pkg or None,
-            "content_id": content_id,
-            "ready": len(tgt_blockers) == 0,
-            "blockers": tgt_blockers,
-        })
-
-    return {
-        "campaign_id": campaign.get("id"),
-        "ready": len(blockers) == 0,
-        "has_active_lock": bool(lock_msg),
-        "blockers": blockers,
-        "target_checks": target_checks,
-    }
+    return campaigns_service.run_campaign_preflight(
+        campaign=campaign,
+        target_subset=target_subset,
+        include_lock_check=include_lock_check,
+        is_locked_fn=_is_any_workflow_active,
+        resolve_filepath_fn=_resolve_content_filepath,
+        db_module=db,
+        scanner_module=package_scanner,
+    )
 
 
 def _finalize_task_recording(
@@ -1777,53 +1612,15 @@ def _finalize_task_recording(
     cleanup_ok: bool,
     task_start_time: float,
 ) -> None:
-    if not recorder:
-        return
-    try:
-        rec_res = recorder.stop(terminal_task_state=terminal_state, cleanup_ok=cleanup_ok)
-        db.update_task_recording(
-            task_id,
-            status=rec_res.get("status", "unavailable"),
-            recording_path=rec_res.get("recording_path"),
-            duration_seconds=rec_res.get("duration_seconds"),
-            segments=rec_res.get("segments"),
-            started_at=rec_res.get("started_at"),
-            completed_at=rec_res.get("completed_at"),
-            error=rec_res.get("error"),
-        )
-        elapsed_ms = int((time.time() - task_start_time) * 1000)
-        st = rec_res.get("status")
-        if st == "deleted_success":
-            db.append_task_event(
-                task_id,
-                "info",
-                "Cleaned up task screen recording video after 100% verified success and verified app stop.",
-                elapsed_ms=elapsed_ms,
-            )
-        elif st == "saved":
-            dur = rec_res.get("duration_seconds") or 0.0
-            db.append_task_event(
-                task_id,
-                "info",
-                f"Retained device screen recording artifact ({dur}s) for inspection due to task outcome: {terminal_state}.",
-                elapsed_ms=elapsed_ms,
-            )
-        elif st == "capture_failed":
-            db.append_task_event(
-                task_id,
-                "warning",
-                f"Device screen recording was not captured: {rec_res.get('error')}",
-                elapsed_ms=elapsed_ms,
-            )
-        elif st == "delete_failed":
-            db.append_task_event(
-                task_id,
-                "error",
-                f"Failed to delete screen recording file after 100% verified success: {rec_res.get('error')}",
-                elapsed_ms=elapsed_ms,
-            )
-    except Exception as rec_exc:
-        logger.warning(f"Failed to finalize recording for task #{task_id}: {rec_exc}")
+    tasks_service.finalize_task_recording(
+        recorder=recorder,
+        task_id=task_id,
+        terminal_state=terminal_state,
+        cleanup_ok=cleanup_ok,
+        task_start_time=task_start_time,
+        db_module=db,
+        logger_instance=logger,
+    )
 
 
 def _execute_campaign_run_worker(run_id: int) -> None:

@@ -1,6 +1,11 @@
 # Product Requirements Document (PRD)
 ## Instoper — Automated Instagram Reel Publishing Platform
 
+> [!NOTE]
+> **Canonical Location:** This document has been organized into the central documentation directory at [`docs/PRD.md`](docs/PRD.md).
+> All implementation plans are organized at [`docs/plans/`](docs/plans/).
+> This root copy is retained for backwards compatibility with direct file references.
+
 ---
 
 ## 1. Executive Summary & Product Overview

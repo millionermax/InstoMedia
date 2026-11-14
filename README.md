@@ -77,5 +77,15 @@ python adb.py --audio "https://www.instagram.com/reels/audio/<id>/" --video "pat
 
 ---
 
+## Documentation & Architecture
+
+Comprehensive technical specifications, design documents, and execution plans are organized under [`docs/`](docs/):
+- **Documentation Overview**: [`docs/README.md`](docs/README.md)
+- **Product Requirements Document (PRD)**: [`docs/PRD.md`](docs/PRD.md)
+- **Review Notes & Safety Audit**: [`docs/ANTIGRAVITY_REVIEW_NOTES.md`](docs/ANTIGRAVITY_REVIEW_NOTES.md)
+- **Modular Implementation Plans**: [`docs/plans/README.md`](docs/plans/README.md)
+
+---
+
 ## License
 MIT License. Created by [ilovekushgola](https://github.com/ilovekushgola).
